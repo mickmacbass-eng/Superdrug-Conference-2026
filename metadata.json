@@ -1,0 +1,8 @@
+{
+  "name": "Superdrug Supplier Conference 2026",
+  "description": "The official mobile-first Progressive Web App companion for the Superdrug Supplier Conference, 15th October 2026 at The Brewery London.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

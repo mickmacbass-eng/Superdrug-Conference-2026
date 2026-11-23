@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#000000" />
+  <path d="M256 70 L288 190 L410 190 L312 265 L350 385 L256 312 L162 385 L200 265 L102 190 L224 190 Z" fill="#E5007D" />
+  <circle cx="256" cy="256" r="32" fill="#FFFFFF" />
+  <text x="256" y="450" font-family="system-ui, -apple-system, sans-serif" font-weight="900" font-size="44" fill="#FFFFFF" text-anchor="middle" letter-spacing="4">SUPERDRUG</text>
+</svg>
