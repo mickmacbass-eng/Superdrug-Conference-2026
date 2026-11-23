@@ -2,7 +2,7 @@ import React from 'react';
 import { Session } from '../data/conferenceData';
 import { NavTab } from './BottomNav';
 import { useBrand } from '../config/BrandContext';
-import { MapPin, Radio, Award, QrCode, Sparkles } from 'lucide-react';
+import { MapPin, Radio, Clock, QrCode } from 'lucide-react';
 import { EventFeedback } from './EventFeedback';
 import { ConferenceCountdown } from './ConferenceCountdown';
 
@@ -142,14 +142,14 @@ export const HubView: React.FC<HubViewProps> = ({
         </h3>
         <div className="grid grid-cols-2 gap-3">
           <button
-            onClick={() => onNavigateTab('my-pass')}
+            onClick={() => onNavigateTab('running-order')}
             className="flex flex-col text-left p-4 rounded-2xl border border-neutral-200 bg-white hover:border-black active:scale-[0.98] transition-all group tap-highlight"
           >
             <div className="w-9 h-9 rounded-full bg-neutral-100 flex items-center justify-center mb-3 group-hover:bg-black transition-colors">
-              <Award className="w-4 h-4 text-brand" />
+              <Clock className="w-4 h-4 text-brand" />
             </div>
-            <span className="text-sm font-bold text-black">My Supplier Pass</span>
-            <span className="text-[11px] text-neutral-500 mt-0.5">Digital badge &amp; table allocation</span>
+            <span className="text-sm font-bold text-black">Running Order</span>
+            <span className="text-[11px] text-neutral-500 mt-0.5">Full schedule &amp; saved sessions</span>
           </button>
 
           <button

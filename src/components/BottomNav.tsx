@@ -1,7 +1,7 @@
 import React from 'react';
-import { LayoutGrid, Clock, MessageSquare, QrCode } from 'lucide-react';
+import { LayoutGrid, Clock, MessageSquare } from 'lucide-react';
 
-export type NavTab = 'hub' | 'running-order' | 'interactions' | 'my-pass';
+export type NavTab = 'hub' | 'running-order' | 'interactions';
 
 interface BottomNavProps {
   activeTab: NavTab;
@@ -34,11 +34,6 @@ export const BottomNav: React.FC<BottomNavProps> = ({
       icon: MessageSquare,
       badge: unvotedPollCount > 0 ? 'Live' : undefined,
     },
-    {
-      id: 'my-pass' as NavTab,
-      label: 'My Pass',
-      icon: QrCode,
-    },
   ];
 
   return (
@@ -47,7 +42,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
       role="navigation"
       aria-label="Conference Bottom Navigation"
     >
-      <div className="max-w-md mx-auto grid grid-cols-4 items-center h-16 px-1">
+      <div className="max-w-md mx-auto grid grid-cols-3 items-center h-16 px-1">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id;
           const Icon = tab.icon;
@@ -74,7 +69,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
                 )}
               </div>
               <span
-                className={`text-[11px] mt-1 tracking-tight leading-none ${
+                className={`text-[11px] mt-1 tracking-tight leading-none whitespace-nowrap ${
                   isActive ? 'text-black font-bold' : 'text-neutral-500 font-medium'
                 }`}
               >

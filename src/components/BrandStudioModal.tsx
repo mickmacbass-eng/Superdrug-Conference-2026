@@ -371,7 +371,6 @@ export const BrandStudioModal: React.FC<BrandStudioModalProps> = ({
                   { key: 'enableHub', label: 'Hub View', desc: 'Welcome overview, quick links, live session spotlight' },
                   { key: 'enableRunningOrder', label: 'Running Order Timeline', desc: 'Single-stream schedule with agenda bookmarking' },
                   { key: 'enableInteractions', label: 'Interactions & Live Polls', desc: 'Audience polling, Q&A upvotes, speaker questions' },
-                  { key: 'enableMyPass', label: 'My Pass Accreditation', desc: 'Scannable QR badge and wallet card simulation' },
                   { key: 'enableFloorMap', label: 'Interactive Floor Map', desc: 'The Brewery / venue blueprint modal' },
                   { key: 'enableCalendarExport', label: 'Calendar .ICS Sync', desc: 'Export sessions directly to phone calendar' },
                   { key: 'enableStagePrompter', label: 'Stage Confidence Screen', desc: 'Prompter mode for podiums and AV desk' },

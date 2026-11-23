@@ -9,7 +9,6 @@ import { BottomNav, NavTab } from './components/BottomNav';
 import { HubView } from './components/HubView';
 import { RunningOrderView } from './components/RunningOrderView';
 import { InteractionsView } from './components/InteractionsView';
-import { MyPassView } from './components/MyPassView';
 import { SessionDetailModal } from './components/SessionDetailModal';
 import { VenueModal } from './components/VenueModal';
 import { PWAInstallGuideModal } from './components/PWAInstallGuideModal';
@@ -418,10 +417,6 @@ export default function App() {
               onToggleUpvote={handleToggleUpvote}
               initialTargetSpeaker={targetSpeakerForQA}
             />
-          )}
-
-          {activeTab === 'my-pass' && (
-            <MyPassView onOpenQRCode={() => setShowQRCodeModal(true)} />
           )}
 
           {/* Quiet Copyright Footer (includes hidden 5-tap organiser shortcut) */}

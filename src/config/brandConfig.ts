@@ -38,7 +38,6 @@ export interface BrandConfig {
     enableHub: boolean;
     enableRunningOrder: boolean;
     enableInteractions: boolean;
-    enableMyPass: boolean;
     enableFloorMap: boolean;
     enableCalendarExport: boolean;
     enablePWAInstall: boolean;
@@ -73,7 +72,6 @@ export const BRAND_PRESETS: Record<string, BrandConfig> = {
       enableHub: true,
       enableRunningOrder: true,
       enableInteractions: true,
-      enableMyPass: true,
       enableFloorMap: true,
       enableCalendarExport: true,
       enablePWAInstall: true,
@@ -106,7 +104,6 @@ export const BRAND_PRESETS: Record<string, BrandConfig> = {
       enableHub: true,
       enableRunningOrder: true,
       enableInteractions: true,
-      enableMyPass: true,
       enableFloorMap: true,
       enableCalendarExport: true,
       enablePWAInstall: true,
@@ -141,7 +138,6 @@ export const BRAND_PRESETS: Record<string, BrandConfig> = {
       enableHub: true,
       enableRunningOrder: true,
       enableInteractions: true,
-      enableMyPass: true,
       enableFloorMap: true,
       enableCalendarExport: true,
       enablePWAInstall: true,
@@ -175,7 +171,6 @@ export const BRAND_PRESETS: Record<string, BrandConfig> = {
       enableHub: true,
       enableRunningOrder: true,
       enableInteractions: true,
-      enableMyPass: true,
       enableFloorMap: true,
       enableCalendarExport: true,
       enablePWAInstall: true,
