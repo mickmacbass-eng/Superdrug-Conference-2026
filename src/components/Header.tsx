@@ -1,24 +1,20 @@
 import React from 'react';
-import { Download, Wifi, WifiOff, MapPin, Navigation, QrCode } from 'lucide-react';
+import { WifiOff, MapPin, Navigation, QrCode } from 'lucide-react';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
-import { usePWAInstall } from '../hooks/usePWAInstall';
 import { useBrand } from '../config/BrandContext';
 
 interface HeaderProps {
   onOpenVenueMap: () => void;
-  onOpenInstallGuide: () => void;
   onOpenSplash?: () => void;
   onOpenQRCode?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   onOpenVenueMap,
-  onOpenInstallGuide,
   onOpenSplash,
   onOpenQRCode,
 }) => {
   const isOnline = useOnlineStatus();
-  const { isInstallable, isInstalled } = usePWAInstall();
   const { config } = useBrand();
 
   const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
@@ -98,23 +94,6 @@ export const Header: React.FC<HeaderProps> = ({
               <WifiOff className="w-3.5 h-3.5" />
               Offline
             </span>
-          )}
-
-          {!isInstalled && (
-            <button
-              onClick={onOpenInstallGuide}
-              className="flex items-center gap-1.5 text-xs font-semibold bg-brand text-white px-3 py-1.5 rounded-full shadow-sm hover:opacity-90 active:scale-95 transition-all tap-highlight whitespace-nowrap"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden xs:inline">Install</span>
-            </button>
-          )}
-
-          {isInstalled && (
-            <div className="flex items-center gap-1 text-[11px] text-neutral-500">
-              <Wifi className="w-3.5 h-3.5 text-neutral-400" />
-              <span className="font-medium">Live</span>
-            </div>
           )}
         </div>
       </div>

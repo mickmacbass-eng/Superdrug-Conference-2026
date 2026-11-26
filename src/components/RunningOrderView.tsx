@@ -12,6 +12,7 @@ import {
   Utensils,
   Wine,
 } from 'lucide-react';
+import { useBrand } from '../config/BrandContext';
 
 interface RunningOrderViewProps {
   sessions: Session[];
@@ -28,6 +29,8 @@ export const RunningOrderView: React.FC<RunningOrderViewProps> = ({
   onSelectSession,
   onNavigateToInteractions,
 }) => {
+  const { config } = useBrand();
+  const speakerQuestionsEnabled = config.features.enableSpeakerQuestions !== false;
   const [activeFilter, setActiveFilter] = useState<'all' | 'saved'>('all');
   const [selectedTrack, setSelectedTrack] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -283,12 +286,14 @@ export const RunningOrderView: React.FC<RunningOrderViewProps> = ({
                     <ChevronRight className="w-3.5 h-3.5" />
                   </button>
 
-                  <button
-                    onClick={() => onNavigateToInteractions(session.presenters)}
-                    className="text-xs font-semibold text-[#E5007D] hover:underline"
-                  >
-                    Ask Presenters
-                  </button>
+                  {speakerQuestionsEnabled && (
+                    <button
+                      onClick={() => onNavigateToInteractions(session.presenters)}
+                      className="text-xs font-semibold text-[#E5007D] hover:underline"
+                    >
+                      Ask Presenters
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

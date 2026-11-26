@@ -34,11 +34,31 @@ export const BrandProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     }
 
-    // 2. Local storage persistence
+    // 2. Local storage persistence (merged with defaults so new feature flags always resolve cleanly)
     try {
       const saved = localStorage.getItem('conference_brand_config');
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved) as Partial<BrandConfig>;
+        return {
+          ...DEFAULT_BRAND_CONFIG,
+          ...parsed,
+          colors: {
+            ...DEFAULT_BRAND_CONFIG.colors,
+            ...(parsed.colors || {}),
+          },
+          logo: {
+            ...DEFAULT_BRAND_CONFIG.logo,
+            ...(parsed.logo || {}),
+          },
+          features: {
+            ...DEFAULT_BRAND_CONFIG.features,
+            ...(parsed.features
+              ? Object.fromEntries(
+                  Object.entries(parsed.features).filter(([key]) => key in DEFAULT_BRAND_CONFIG.features)
+                )
+              : {}),
+          },
+        };
       }
     } catch {
       // fallback

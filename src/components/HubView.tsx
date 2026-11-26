@@ -121,7 +121,11 @@ export const HubView: React.FC<HubViewProps> = ({
               className="flex-1 bg-brand text-white text-xs font-semibold py-2.5 px-4 rounded-full shadow-sm hover:opacity-90 active:scale-95 transition-all flex items-center justify-center gap-1.5 tap-highlight"
             >
               <Radio className="w-3.5 h-3.5" />
-              <span>Ask Speaker / Live Poll</span>
+              <span>
+                {config.features.enableSpeakerQuestions !== false
+                  ? 'Ask Speaker / Live Poll'
+                  : 'Join Live Poll'}
+              </span>
             </button>
             <button
               onClick={() => onOpenSessionModal(currentLiveSession)}

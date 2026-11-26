@@ -1,15 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Star, MessageSquare, CheckCircle2, Sparkles, Send, Edit3, ChevronDown, ChevronUp, Heart, ThumbsUp, BarChart3, Download } from 'lucide-react';
+import { Star, MessageSquare, CheckCircle2, Sparkles, Send, Edit3, ChevronDown, ChevronUp, Heart, ThumbsUp, BarChart3, Download, Loader2, AlertCircle } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useBrand } from '../config/BrandContext';
 import {
-  recordFeedbackSubmission,
-  getAllFeedbackSubmissions,
   FeedbackSubmission,
   USER_FEEDBACK_KEY,
 } from '../data/feedbackData';
+import {
+  submitEventFeedback,
+  subscribeEventFeedback,
+} from '../services/firestoreService';
 
 export interface EventFeedbackData {
+  docId?: string;
   overallRating: number;
   categoryRatings: {
     content: number;
@@ -81,11 +84,23 @@ export const EventFeedback: React.FC = () => {
     }
   });
 
-  const [allSubmissions, setAllSubmissions] = useState<FeedbackSubmission[]>(() => {
-    return getAllFeedbackSubmissions();
-  });
-
+  const [allSubmissions, setAllSubmissions] = useState<FeedbackSubmission[]>([]);
   const [isEditing, setIsEditing] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Subscribe to real-time Firestore event_feedback for live community average
+  useEffect(() => {
+    const unsubscribe = subscribeEventFeedback(
+      (items) => {
+        setAllSubmissions(items);
+      },
+      () => {
+        // Keep quiet fallback if Firestore rules restrict public list reads on event_feedback
+      }
+    );
+    return () => unsubscribe();
+  }, []);
 
   // Form states
   const [overallRating, setOverallRating] = useState<number>(0);
@@ -126,15 +141,18 @@ export const EventFeedback: React.FC = () => {
     setOverallRating(rating);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (overallRating === 0) {
+    if (overallRating === 0 || isSubmitting) {
       return;
     }
 
+    setIsSubmitting(true);
+    setSubmitError(null);
+
     const formattedTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-    const newFeedback: EventFeedbackData = {
+    const payload: Omit<FeedbackSubmission, 'id' | 'timestamp'> = {
       overallRating,
       categoryRatings: {
         content: contentRating || overallRating,
@@ -150,48 +168,49 @@ export const EventFeedback: React.FC = () => {
     };
 
     try {
-      localStorage.setItem(USER_FEEDBACK_KEY, JSON.stringify(newFeedback));
-    } catch {
-      // ignore
-    }
+      const docId = await submitEventFeedback(payload, feedback?.docId);
+      const newFeedback: EventFeedbackData = {
+        ...payload,
+        docId,
+      };
 
-    // Also record into the shared organizer submission pool
-    recordFeedbackSubmission({
-      overallRating: newFeedback.overallRating,
-      categoryRatings: newFeedback.categoryRatings,
-      selectedTags: newFeedback.selectedTags,
-      comment: newFeedback.comment,
-      name: newFeedback.name,
-      company: newFeedback.company,
-      isAnonymous: newFeedback.isAnonymous,
-      submittedAt: newFeedback.submittedAt,
-    });
+      try {
+        localStorage.setItem(USER_FEEDBACK_KEY, JSON.stringify(newFeedback));
+      } catch {
+        // ignore
+      }
 
-    setAllSubmissions(getAllFeedbackSubmissions());
-    setFeedback(newFeedback);
-    setIsEditing(false);
+      setFeedback(newFeedback);
+      setIsEditing(false);
 
-    // Trigger celebratory confetti
-    try {
-      confetti({
-        particleCount: 50,
-        spread: 60,
-        origin: { y: 0.7 },
-        colors: [config.colors.primaryAccent || '#E5007D', '#000000', '#FCD34D'],
-      });
-    } catch {
-      // ignore
+      // Trigger celebratory confetti
+      try {
+        confetti({
+          particleCount: 50,
+          spread: 60,
+          origin: { y: 0.7 },
+          colors: [config.colors.primaryAccent || '#E5007D', '#000000', '#FCD34D'],
+        });
+      } catch {
+        // ignore
+      }
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Unable to save feedback.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleStartEditing = () => {
+    setSubmitError(null);
     setIsEditing(true);
   };
 
   const activeDisplayRating = hoverRating || overallRating;
-  const avgOverallRating = allSubmissions.length > 0
-    ? (allSubmissions.reduce((acc, curr) => acc + curr.overallRating, 0) / allSubmissions.length).toFixed(1)
-    : '4.9';
+  const avgOverallRating =
+    allSubmissions.length > 0
+      ? (allSubmissions.reduce((acc, curr) => acc + curr.overallRating, 0) / allSubmissions.length).toFixed(1)
+      : '—';
 
   return (
     <section className="bg-white border-2 border-neutral-200 rounded-3xl p-5 shadow-sm space-y-4">
@@ -507,19 +526,35 @@ export const EventFeedback: React.FC = () => {
             </div>
           )}
 
+          {submitError && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <span>{submitError}</span>
+            </div>
+          )}
+
           {/* Submit Action */}
           <div className="flex items-center gap-2 pt-2">
             <button
               type="submit"
-              disabled={overallRating === 0}
+              disabled={overallRating === 0 || isSubmitting}
               className={`flex-1 py-3 px-4 rounded-full font-bold text-xs flex items-center justify-center gap-2 transition-all tap-highlight min-h-[44px] ${
-                overallRating > 0
+                overallRating > 0 && !isSubmitting
                   ? 'bg-black text-white hover:bg-neutral-800 active:scale-98 shadow-sm cursor-pointer'
                   : 'bg-neutral-200 text-neutral-400 cursor-not-allowed'
               }`}
             >
-              <Send className="w-3.5 h-3.5" />
-              <span>{overallRating > 0 ? 'Submit Event Feedback' : 'Select a Star Rating to Submit'}</span>
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Saving to Cloud...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-3.5 h-3.5" />
+                  <span>{overallRating > 0 ? 'Submit Event Feedback' : 'Select a Star Rating to Submit'}</span>
+                </>
+              )}
             </button>
 
             {isEditing && (
@@ -544,19 +579,32 @@ export const EventFeedback: React.FC = () => {
         >
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse inline-block" />
-            <span>
-              {avgOverallRating} / 5.0 Average Rating · {allSubmissions.length} Feedback Responses
+            <span className="tabular-nums">
+              {allSubmissions.length > 0
+                ? `${avgOverallRating} / 5.0 Average Rating · ${allSubmissions.length} Live ${allSubmissions.length === 1 ? 'Response' : 'Responses'}`
+                : 'Synced live with conference leadership'}
             </span>
           </span>
           <span className="text-brand font-semibold flex items-center gap-0.5">
-            {showCommunityReviews ? 'Hide' : 'Read Recent'}
+            {showCommunityReviews ? 'Hide' : 'Highlights'}
             {showCommunityReviews ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
           </span>
         </button>
 
         {showCommunityReviews && (
           <div className="mt-2.5 space-y-2 pt-1 border-t border-neutral-100">
-            {SAMPLE_COMMUNITY_FEEDBACK.map((sample, idx) => (
+            {(allSubmissions.filter((s) => s.comment).length > 0
+              ? allSubmissions
+                  .filter((s) => s.comment)
+                  .slice(0, 3)
+                  .map((item) => ({
+                    rating: item.overallRating,
+                    author: item.isAnonymous ? 'Anonymous Delegate' : item.name,
+                    time: item.submittedAt,
+                    text: item.comment,
+                  }))
+              : SAMPLE_COMMUNITY_FEEDBACK
+            ).map((sample, idx) => (
               <div key={idx} className="bg-neutral-50 rounded-xl p-2.5 text-xs space-y-1">
                 <div className="flex items-center justify-between text-[10px]">
                   <div className="flex items-center gap-1 text-brand font-bold">

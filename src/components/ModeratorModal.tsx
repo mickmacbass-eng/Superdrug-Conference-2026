@@ -1,11 +1,10 @@
-import React, { useState, useMemo } from 'react';
-import { QAQuestion, Poll, CONFERENCE_INFO } from '../data/conferenceData';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Poll, CONFERENCE_INFO } from '../data/conferenceData';
 import {
   Shield,
   Tv,
   CheckCircle,
   Pin,
-  ArrowUp,
   Minimize2,
   Trash2,
   X,
@@ -20,17 +19,17 @@ import {
   Calendar,
   Sparkles,
   TrendingUp,
-  RefreshCw,
   Lock,
   KeyRound,
   Palette,
+  AlertCircle,
+  Loader2,
+  ThumbsUp,
+  RotateCcw,
 } from 'lucide-react';
 import {
-  getAllFeedbackSubmissions,
   downloadFeedbackCSV,
   FeedbackSubmission,
-  FEEDBACK_STORAGE_KEY,
-  INITIAL_FEEDBACK_ENTRIES,
 } from '../data/feedbackData';
 import { useBrand } from '../config/BrandContext';
 import {
@@ -38,14 +37,20 @@ import {
   resetOrganizerPasscode,
   hasCustomOrganizerPasscode,
 } from '../utils/organizerAuth';
+import {
+  SpeakerQuestion,
+  SpeakerQuestionStatus,
+  subscribeSpeakerQuestions,
+  updateSpeakerQuestionStatus,
+  deleteSpeakerQuestion,
+  subscribeEventFeedback,
+  deleteEventFeedback,
+  resetPollVotes,
+} from '../services/firestoreService';
 
 interface ModeratorModalProps {
   onClose: () => void;
-  questions: QAQuestion[];
   polls: Poll[];
-  onToggleUpvote: (id: string) => void;
-  onMarkAnswered: (id: string) => void;
-  onDeleteQuestion: (id: string) => void;
   initialTab?: 'questions' | 'polls' | 'feedback';
   onLockOrganizer?: () => void;
   onOpenBrandStudio?: () => void;
@@ -53,11 +58,7 @@ interface ModeratorModalProps {
 
 export const ModeratorModal: React.FC<ModeratorModalProps> = ({
   onClose,
-  questions,
   polls,
-  onToggleUpvote,
-  onMarkAnswered,
-  onDeleteQuestion,
   initialTab = 'questions',
   onLockOrganizer,
   onOpenBrandStudio,
@@ -65,9 +66,14 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
   const { config } = useBrand();
   const [activeTab, setActiveTab] = useState<'questions' | 'polls' | 'feedback'>(initialTab);
   const [stageModeActive, setStageModeActive] = useState(false);
-  const [pinnedQuestionId, setPinnedQuestionId] = useState<string | null>(
-    questions[0]?.id || null
-  );
+
+  // Real-time Firestore speaker_questions state (ONLY subscribed while unlocked modal is mounted)
+  const [questions, setQuestions] = useState<SpeakerQuestion[]>([]);
+  const [questionsLoading, setQuestionsLoading] = useState(true);
+  const [questionsError, setQuestionsError] = useState<string | null>(null);
+  const [questionStatusFilter, setQuestionStatusFilter] = useState<'all' | SpeakerQuestionStatus>('all');
+  const [pinnedQuestionId, setPinnedQuestionId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Passcode management panel state
   const [showPasscodePanel, setShowPasscodePanel] = useState(false);
@@ -76,24 +82,86 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
   const [passcodeMessage, setPasscodeMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isCustomPasscode, setIsCustomPasscode] = useState(() => hasCustomOrganizerPasscode(config.id));
 
-  // Feedback states
-  const [feedbackList, setFeedbackList] = useState<FeedbackSubmission[]>(() => {
-    return getAllFeedbackSubmissions();
-  });
+  // Real-time Firestore event_feedback state
+  const [feedbackList, setFeedbackList] = useState<FeedbackSubmission[]>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(true);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [ratingFilter, setRatingFilter] = useState<'all' | '5' | '4' | '3'>('all');
   const [selectedTagFilter, setSelectedTagFilter] = useState<string | null>(null);
   const [downloadSuccessToast, setDownloadSuccessToast] = useState(false);
+  const [resettingPollId, setResettingPollId] = useState<string | null>(null);
 
-  const sortedQuestions = useMemo(() => {
-    return [...questions].sort((a, b) => {
-      if (a.answered && !b.answered) return 1;
-      if (!a.answered && b.answered) return -1;
-      return b.upvotes - a.upvotes;
-    });
-  }, [questions]);
+  // Subscribe to Firestore speaker_questions (ordered by createdAt desc)
+  useEffect(() => {
+    setQuestionsLoading(true);
+    setQuestionsError(null);
+    const unsubscribe = subscribeSpeakerQuestions(
+      (items) => {
+        setQuestions(items);
+        setQuestionsLoading(false);
+        setQuestionsError(null);
+      },
+      (errMessage) => {
+        setQuestionsLoading(false);
+        setQuestionsError(errMessage);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
 
-  const pinnedQuestion = questions.find((q) => q.id === pinnedQuestionId) || sortedQuestions[0];
+  // Subscribe to Firestore event_feedback (ordered by createdAt desc)
+  useEffect(() => {
+    setFeedbackLoading(true);
+    setFeedbackError(null);
+    const unsubscribe = subscribeEventFeedback(
+      (items) => {
+        setFeedbackList(items);
+        setFeedbackLoading(false);
+        setFeedbackError(null);
+      },
+      (errMessage) => {
+        setFeedbackLoading(false);
+        setFeedbackError(errMessage);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  const filteredQuestions = useMemo(() => {
+    const statusOrder: Record<SpeakerQuestionStatus, number> = {
+      approved: 0,
+      pending: 1,
+      answered: 2,
+    };
+    return questions
+      .filter((q) => (questionStatusFilter === 'all' ? true : q.status === questionStatusFilter))
+      .sort((a, b) => {
+        if (questionStatusFilter === 'all' && statusOrder[a.status] !== statusOrder[b.status]) {
+          return statusOrder[a.status] - statusOrder[b.status];
+        }
+        return b.createdAtMs - a.createdAtMs;
+      });
+  }, [questions, questionStatusFilter]);
+
+  const pinnedQuestion =
+    questions.find((q) => q.id === pinnedQuestionId) ||
+    questions.find((q) => q.status === 'approved') ||
+    questions.find((q) => q.status === 'pending') ||
+    questions[0];
+
+  const pendingCount = useMemo(
+    () => questions.filter((q) => q.status === 'pending').length,
+    [questions]
+  );
+  const approvedCount = useMemo(
+    () => questions.filter((q) => q.status === 'approved').length,
+    [questions]
+  );
+  const answeredCount = useMemo(
+    () => questions.filter((q) => q.status === 'answered').length,
+    [questions]
+  );
 
   // Feedback Analytics Calculations
   const metrics = useMemo(() => {
@@ -176,22 +244,45 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
     }
   };
 
-  const handleDeleteFeedback = (id: string) => {
-    const updated = feedbackList.filter((fb) => fb.id !== id);
-    setFeedbackList(updated);
+  const handleSetQuestionStatus = async (questionId: string, status: SpeakerQuestionStatus) => {
+    setActionError(null);
     try {
-      localStorage.setItem(FEEDBACK_STORAGE_KEY, JSON.stringify(updated));
-    } catch {
-      // ignore
+      await updateSpeakerQuestionStatus(questionId, status);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Unable to update question status.');
     }
   };
 
-  const handleResetFeedback = () => {
-    setFeedbackList(INITIAL_FEEDBACK_ENTRIES);
+  const handleDeleteQuestion = async (questionId: string) => {
+    setActionError(null);
     try {
-      localStorage.setItem(FEEDBACK_STORAGE_KEY, JSON.stringify(INITIAL_FEEDBACK_ENTRIES));
-    } catch {
-      // ignore
+      await deleteSpeakerQuestion(questionId);
+      if (pinnedQuestionId === questionId) {
+        setPinnedQuestionId(null);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Unable to delete question.');
+    }
+  };
+
+  const handleDeleteFeedback = async (id: string) => {
+    setActionError(null);
+    try {
+      await deleteEventFeedback(id);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Unable to delete feedback.');
+    }
+  };
+
+  const handleResetPoll = async (poll: Poll) => {
+    setResettingPollId(poll.id);
+    setActionError(null);
+    try {
+      await resetPollVotes(poll);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Unable to reset poll votes.');
+    } finally {
+      setResettingPollId(null);
     }
   };
 
@@ -230,30 +321,31 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
           <div className="my-auto py-8 max-w-3xl mx-auto w-full space-y-6">
             <div className="flex items-center justify-between text-neutral-400 text-xs border-b border-neutral-800 pb-2">
               <div className="flex items-center gap-2">
-                <span className="text-white font-bold">{pinnedQuestion.author}</span>
+                <span className="text-white font-bold">{pinnedQuestion.delegateName}</span>
                 <span>·</span>
-                <span>{pinnedQuestion.role}</span>
+                <span>{pinnedQuestion.createdAtLabel}</span>
               </div>
-              <div className="flex items-center gap-2 font-mono font-bold text-[#E5007D] text-sm">
-                <ArrowUp className="w-4 h-4" />
-                <span>{pinnedQuestion.upvotes} UPVOTES</span>
+              <div className="font-mono font-bold text-[#E5007D] text-xs uppercase tracking-wider">
+                Status: {pinnedQuestion.status}
               </div>
             </div>
 
             <div className="text-xs font-bold text-[#E5007D] uppercase tracking-wider">
-              Question for: {pinnedQuestion.targetSpeaker}
+              Session / Speaker: {pinnedQuestion.sessionName}
             </div>
 
             <blockquote className="text-2xl sm:text-4xl font-extrabold tracking-tight leading-snug text-white">
-              &ldquo;{pinnedQuestion.text}&rdquo;
+              &ldquo;{pinnedQuestion.questionText}&rdquo;
             </blockquote>
 
             <div className="flex items-center gap-3 pt-4">
               <button
-                onClick={() => {
-                  onMarkAnswered(pinnedQuestion.id);
-                  const nextQ = sortedQuestions.find((q) => q.id !== pinnedQuestion.id && !q.answered);
-                  if (nextQ) setPinnedQuestionId(nextQ.id);
+                onClick={async () => {
+                  await handleSetQuestionStatus(pinnedQuestion.id, 'answered');
+                  const nextQ = questions.find(
+                    (q) => q.id !== pinnedQuestion.id && q.status !== 'answered'
+                  );
+                  setPinnedQuestionId(nextQ ? nextQ.id : null);
                 }}
                 className="bg-[#E5007D] text-white text-sm font-bold py-3 px-6 rounded-full flex items-center gap-2 hover:bg-[#c4006b] shadow-lg tap-highlight cursor-pointer"
               >
@@ -525,6 +617,14 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
           </button>
         </div>
 
+        {/* Action / Firestore Error Banner */}
+        {actionError && (
+          <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 text-xs text-red-800">
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+            <span>{actionError}</span>
+          </div>
+        )}
+
         {/* Download Success Banner */}
         {downloadSuccessToast && (
           <div className="mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between text-xs text-emerald-800 animate-fadeIn">
@@ -543,6 +643,18 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
         {/* TAB 1: FEEDBACK & ANALYTICS DASHBOARD */}
         {activeTab === 'feedback' && (
           <div className="flex-1 overflow-y-auto py-3 space-y-4 pr-1">
+            {feedbackError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 text-xs text-red-800">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <span>{feedbackError}</span>
+              </div>
+            )}
+            {feedbackLoading && (
+              <div className="flex items-center gap-2 text-xs text-neutral-500 px-1">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#E5007D]" />
+                <span>Connecting to live Firestore feedback stream...</span>
+              </div>
+            )}
             {/* Top KPI Cards */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <div className="bg-neutral-50 border border-neutral-200 rounded-2xl p-3.5">
@@ -704,16 +816,8 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold uppercase tracking-wider text-black">
-                    Supplier Verbatim Submissions ({filteredFeedback.length})
+                    Live Firestore Submissions ({filteredFeedback.length})
                   </span>
-                  <button
-                    onClick={handleResetFeedback}
-                    className="text-[11px] text-neutral-400 hover:text-black flex items-center gap-1"
-                    title="Reset sample feedback data"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>Reset Data</span>
-                  </button>
                 </div>
 
                 {/* CSV Download Trigger */}
@@ -868,114 +972,193 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
           </div>
         )}
 
-        {/* TAB 2: LIVE QUESTIONS QUEUE */}
+        {/* TAB 2: LIVE QUESTIONS QUEUE (Real-Time Firestore speaker_questions) */}
         {activeTab === 'questions' && (
           <div className="flex-1 overflow-y-auto py-3 space-y-4 pr-1">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-black">
-                Live Incoming Questions Queue ({questions.length})
-              </span>
-              <span className="text-[11px] text-neutral-500">
-                Ranked by Audience Upvotes
-              </span>
-            </div>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <span className="text-xs font-bold uppercase tracking-wider text-black">
+                  Live Incoming Questions Queue ({questions.length})
+                </span>
+                <div className="text-[11px] text-neutral-500">
+                  Real-time Firestore sync · Private from regular delegates
+                </div>
+              </div>
 
-            <div className="space-y-3">
-              {sortedQuestions.map((q) => {
-                const isPinned = pinnedQuestionId === q.id;
-
-                return (
-                  <div
-                    key={q.id}
-                    className={`border rounded-2xl p-4 transition-all space-y-2 ${
-                      q.answered
-                        ? 'border-neutral-200 bg-neutral-50 opacity-60'
-                        : isPinned
-                        ? 'border-black bg-neutral-50 ring-2 ring-black'
-                        : 'border-neutral-200 bg-white hover:border-black'
+              {/* Status Filter Tabs */}
+              <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-xl text-[11px]">
+                {[
+                  { id: 'all' as const, label: `All (${questions.length})` },
+                  { id: 'pending' as const, label: `Pending (${pendingCount})` },
+                  { id: 'approved' as const, label: `Approved (${approvedCount})` },
+                  { id: 'answered' as const, label: `Answered (${answeredCount})` },
+                ].map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setQuestionStatusFilter(f.id)}
+                    className={`px-2.5 py-1 rounded-lg font-bold transition-colors whitespace-nowrap ${
+                      questionStatusFilter === f.id
+                        ? 'bg-white text-black shadow-xs'
+                        : 'text-neutral-500 hover:text-black'
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="flex items-center gap-1.5 text-xs text-neutral-500 flex-wrap">
-                          <span className="font-bold text-black">{q.author}</span>
-                          <span>·</span>
-                          <span>{q.role}</span>
-                          <span>·</span>
-                          <span>{q.timestamp}</span>
-                        </div>
-                        <div className="text-xs font-bold text-[#E5007D] mt-0.5">
-                          Directed To: {q.targetSpeaker}
-                        </div>
-                      </div>
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-bold bg-neutral-100 text-black px-2.5 py-1 rounded-full">
-                          ▲ {q.upvotes}
+            {questionsError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 text-xs text-red-800">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <span>{questionsError}</span>
+              </div>
+            )}
+
+            {questionsLoading ? (
+              <div className="p-8 text-center text-xs text-neutral-500 flex items-center justify-center gap-2 border border-dashed border-neutral-200 rounded-2xl">
+                <Loader2 className="w-4 h-4 animate-spin text-[#E5007D]" />
+                <span>Listening for incoming speaker questions...</span>
+              </div>
+            ) : filteredQuestions.length === 0 ? (
+              <div className="p-8 text-center text-xs text-neutral-500 border border-dashed border-neutral-200 rounded-2xl space-y-1">
+                <div className="font-bold text-black">No questions in this view yet</div>
+                <p className="text-[11px]">
+                  Questions submitted by delegates in Interactions → Ask Speaker appear here automatically in real time.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredQuestions.map((q) => {
+                  const isPinned = pinnedQuestionId === q.id;
+                  const isApproved = q.status === 'approved';
+                  const isAnswered = q.status === 'answered';
+
+                  return (
+                    <div
+                      key={q.id}
+                      className={`border rounded-2xl p-4 transition-all space-y-2.5 ${
+                        isAnswered
+                          ? 'border-neutral-200 bg-neutral-50 opacity-70'
+                          : isPinned
+                          ? 'border-black bg-neutral-50 ring-2 ring-black'
+                          : isApproved
+                          ? 'border-emerald-300 bg-white'
+                          : 'border-neutral-200 bg-white hover:border-black'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-1.5 text-xs text-neutral-500 flex-wrap">
+                            <span className="font-bold text-black">{q.delegateName}</span>
+                            <span>·</span>
+                            <span>{q.createdAtLabel}</span>
+                          </div>
+                          <div className="text-xs font-bold text-[#E5007D] mt-0.5">
+                            Session / Speaker: {q.sessionName}
+                          </div>
+                        </div>
+
+                        <span
+                          className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full whitespace-nowrap shrink-0 ${
+                            isAnswered
+                              ? 'bg-neutral-200 text-neutral-700'
+                              : isApproved
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {q.status}
                         </span>
                       </div>
-                    </div>
 
-                    <p className="text-xs font-medium text-black leading-relaxed">
-                      {q.text}
-                    </p>
+                      <p className="text-xs font-medium text-black leading-relaxed">
+                        {q.questionText}
+                      </p>
 
-                    {/* Moderator Controls */}
-                    <div className="flex items-center justify-between pt-2 border-t border-neutral-100 text-xs">
-                      <div className="flex items-center gap-2">
+                      {/* Moderator Firestore Controls */}
+                      <div className="flex items-center justify-between pt-2 border-t border-neutral-100 text-xs gap-2 flex-wrap">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPinnedQuestionId(q.id);
+                              if (q.status === 'pending') {
+                                void handleSetQuestionStatus(q.id, 'approved');
+                              }
+                            }}
+                            className={`text-xs font-bold px-3 py-1.5 rounded-full transition-colors flex items-center gap-1 whitespace-nowrap ${
+                              isPinned
+                                ? 'bg-[#E5007D] text-white'
+                                : 'bg-neutral-100 text-neutral-700 hover:bg-black hover:text-white'
+                            }`}
+                          >
+                            <Pin className="w-3 h-3 shrink-0" />
+                            <span>{isPinned ? 'On Stage Screen' : 'Push to Stage'}</span>
+                          </button>
+
+                          {!isApproved && !isAnswered && (
+                            <button
+                              type="button"
+                              onClick={() => void handleSetQuestionStatus(q.id, 'approved')}
+                              className="text-xs font-bold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 transition-colors flex items-center gap-1 whitespace-nowrap"
+                            >
+                              <ThumbsUp className="w-3 h-3 shrink-0" />
+                              <span>Approve</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleSetQuestionStatus(
+                                q.id,
+                                isAnswered ? 'approved' : 'answered'
+                              )
+                            }
+                            className={`text-xs font-medium px-3 py-1.5 rounded-full transition-colors flex items-center gap-1 whitespace-nowrap ${
+                              isAnswered
+                                ? 'text-neutral-600 bg-white border border-neutral-200 hover:text-black'
+                                : 'text-neutral-700 hover:text-black border border-neutral-200 bg-white'
+                            }`}
+                          >
+                            <CheckCircle className="w-3 h-3 text-[#E5007D] shrink-0" />
+                            <span>{isAnswered ? 'Reopen' : 'Mark Answered'}</span>
+                          </button>
+                        </div>
+
                         <button
-                          onClick={() => setPinnedQuestionId(q.id)}
-                          className={`text-xs font-bold px-3 py-1 rounded-full transition-colors flex items-center gap-1 ${
-                            isPinned
-                              ? 'bg-[#E5007D] text-white'
-                              : 'bg-neutral-100 text-neutral-700 hover:bg-black hover:text-white'
-                          }`}
+                          type="button"
+                          onClick={() => void handleDeleteQuestion(q.id)}
+                          className="text-neutral-400 hover:text-red-600 p-1.5 transition-colors"
+                          title="Delete question from Firestore"
+                          aria-label="Delete question"
                         >
-                          <Pin className="w-3 h-3" />
-                          <span>{isPinned ? 'Pushed to Stage' : 'Push to Stage'}</span>
-                        </button>
-
-                        <button
-                          onClick={() => onMarkAnswered(q.id)}
-                          className={`text-xs font-medium px-2.5 py-1 rounded-full transition-colors flex items-center gap-1 ${
-                            q.answered
-                              ? 'text-neutral-400'
-                              : 'text-neutral-600 hover:text-black border border-neutral-200'
-                          }`}
-                        >
-                          <CheckCircle className="w-3 h-3 text-[#E5007D]" />
-                          <span>{q.answered ? 'Answered' : 'Mark Answered'}</span>
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
-
-                      <button
-                        onClick={() => onDeleteQuestion(q.id)}
-                        className="text-neutral-400 hover:text-red-600 p-1 transition-colors"
-                        title="Archive question"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
-        {/* TAB 3: LIVE POLLS STATUS */}
+        {/* TAB 3: LIVE POLLS STATUS (Real-Time Firestore polls) */}
         {activeTab === 'polls' && (
           <div className="flex-1 overflow-y-auto py-3 space-y-4 pr-1">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-black">
                 Active Audience Polls ({polls.length})
               </span>
-              <span className="text-[11px] text-neutral-500">Live Stage Tallies</span>
+              <span className="text-[11px] text-neutral-500">Real-Time Firestore Tallies</span>
             </div>
 
             <div className="space-y-4">
               {polls.map((poll) => {
-                const totalVotes = poll.totalVotes || 1;
+                const totalVotes = poll.totalVotes || 0;
                 return (
                   <div
                     key={poll.id}
@@ -990,25 +1173,37 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
                           {poll.question}
                         </h4>
                       </div>
-                      <span className="text-xs font-mono font-bold bg-neutral-100 text-black px-2 py-0.5 rounded-full shrink-0">
-                        {poll.totalVotes} votes
-                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-xs font-mono font-bold bg-neutral-100 text-black px-2.5 py-1 rounded-full tabular-nums">
+                          {totalVotes} {totalVotes === 1 ? 'vote' : 'votes'}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={resettingPollId === poll.id}
+                          onClick={() => void handleResetPoll(poll)}
+                          className="text-[11px] font-semibold text-neutral-500 hover:text-black border border-neutral-200 hover:border-neutral-400 px-2.5 py-1 rounded-full flex items-center gap-1 transition-colors whitespace-nowrap"
+                          title="Reset poll votes to zero in Firestore"
+                        >
+                          <RotateCcw className={`w-3 h-3 ${resettingPollId === poll.id ? 'animate-spin' : ''}`} />
+                          <span>Reset</span>
+                        </button>
+                      </div>
                     </div>
 
                     <div className="space-y-2 pt-1">
                       {poll.options.map((opt) => {
-                        const pct = Math.round((opt.votes / totalVotes) * 100);
+                        const pct = totalVotes > 0 ? Math.round((opt.votes / totalVotes) * 100) : 0;
                         return (
                           <div key={opt.id} className="space-y-1">
-                            <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center justify-between text-xs gap-2">
                               <span className="text-neutral-700 font-medium">{opt.text}</span>
-                              <span className="font-mono font-bold text-black">
+                              <span className="font-mono font-bold text-black tabular-nums whitespace-nowrap shrink-0">
                                 {opt.votes} ({pct}%)
                               </span>
                             </div>
                             <div className="h-2 w-full bg-neutral-100 rounded-full overflow-hidden">
                               <div
-                                className="h-full bg-[#E5007D] rounded-full transition-all"
+                                className="h-full bg-[#E5007D] rounded-full transition-all duration-300"
                                 style={{ width: `${pct}%` }}
                               />
                             </div>

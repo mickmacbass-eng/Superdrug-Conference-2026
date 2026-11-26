@@ -11,7 +11,6 @@ import { RunningOrderView } from './components/RunningOrderView';
 import { InteractionsView } from './components/InteractionsView';
 import { SessionDetailModal } from './components/SessionDetailModal';
 import { VenueModal } from './components/VenueModal';
-import { PWAInstallGuideModal } from './components/PWAInstallGuideModal';
 import { ModeratorModal } from './components/ModeratorModal';
 import { BrandStudioModal } from './components/BrandStudioModal';
 import { SplashScreen } from './components/SplashScreen';
@@ -25,18 +24,22 @@ import {
 import {
   INITIAL_SESSIONS,
   INITIAL_POLLS,
-  INITIAL_QA,
   FEATURED_SPEAKERS,
   Session,
   Poll,
-  QAQuestion,
 } from './data/conferenceData';
+import {
+  castPollVote,
+  getLocalVotedPolls,
+  submitSpeakerQuestion,
+  subscribePolls,
+} from './services/firestoreService';
 
 export default function App() {
   const { config } = useBrand();
   const [activeTab, setActiveTab] = useState<NavTab>('hub');
 
-  // Bookmarks persistence
+  // Bookmarks persistence (personal per-device schedule)
   const [bookmarkedIds, setBookmarkedIds] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem('sd_saved_sessions');
@@ -46,30 +49,40 @@ export default function App() {
     }
   });
 
-  // Polls persistence
-  const [polls, setPolls] = useState<Poll[]>(() => {
-    try {
-      const saved = localStorage.getItem('sd_live_polls');
-      return saved ? JSON.parse(saved) : INITIAL_POLLS;
-    } catch {
-      return INITIAL_POLLS;
-    }
-  });
+  // Real-Time Firestore Polls + per-device duplicate vote guard
+  const [remotePolls, setRemotePolls] = useState<Poll[]>(() =>
+    INITIAL_POLLS.map((p) => ({
+      ...p,
+      totalVotes: 0,
+      options: p.options.map((o) => ({ ...o, votes: 0 })),
+    }))
+  );
+  const [pollsError, setPollsError] = useState<string | null>(null);
+  const [votedPollsMap, setVotedPollsMap] = useState<Record<string, string>>(() =>
+    getLocalVotedPolls()
+  );
 
-  // QA Questions persistence
-  const [qaQuestions, setQaQuestions] = useState<QAQuestion[]>(() => {
-    try {
-      const saved = localStorage.getItem('sd_qa_questions');
-      return saved ? JSON.parse(saved) : INITIAL_QA;
-    } catch {
-      return INITIAL_QA;
-    }
-  });
+  useEffect(() => {
+    const unsubscribe = subscribePolls(
+      (livePolls) => {
+        setRemotePolls(livePolls);
+        setPollsError(null);
+      },
+      (errMessage) => {
+        setPollsError(errMessage);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  const polls: Poll[] = remotePolls.map((poll) => ({
+    ...poll,
+    userVotedOptionId: votedPollsMap[poll.id],
+  }));
 
   // Modals & Organizer Access Guard
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [showVenueModal, setShowVenueModal] = useState(false);
-  const [showInstallModal, setShowInstallModal] = useState(false);
   const [showModeratorModal, setShowModeratorModal] = useState(false);
   const [moderatorTab, setModeratorTab] = useState<'questions' | 'polls' | 'feedback'>('questions');
   const [showBrandStudioModal, setShowBrandStudioModal] = useState(false);
@@ -243,24 +256,6 @@ export default function App() {
     }
   }, [bookmarkedIds]);
 
-  // Sync polls to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('sd_live_polls', JSON.stringify(polls));
-    } catch {
-      // ignore
-    }
-  }, [polls]);
-
-  // Sync QA to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('sd_qa_questions', JSON.stringify(qaQuestions));
-    } catch {
-      // ignore
-    }
-  }, [qaQuestions]);
-
   const toggleBookmark = (sessionId: string) => {
     setBookmarkedIds((prev) => {
       const next = new Set(prev);
@@ -273,76 +268,18 @@ export default function App() {
     });
   };
 
-  const handleVotePoll = (pollId: string, optionId: string) => {
-    setPolls((prev) =>
-      prev.map((poll) => {
-        if (poll.id !== pollId) return poll;
-        if (poll.userVotedOptionId === optionId) return poll;
-
-        const previousOptionId = poll.userVotedOptionId;
-        const newOptions = poll.options.map((opt) => {
-          if (opt.id === optionId) {
-            return { ...opt, votes: opt.votes + 1 };
-          }
-          if (opt.id === previousOptionId) {
-            return { ...opt, votes: Math.max(0, opt.votes - 1) };
-          }
-          return opt;
-        });
-
-        const totalVotes = previousOptionId ? poll.totalVotes : poll.totalVotes + 1;
-
-        return {
-          ...poll,
-          totalVotes,
-          userVotedOptionId: optionId,
-          options: newOptions,
-        };
-      })
-    );
+  const handleVotePoll = async (pollId: string, optionId: string) => {
+    if (votedPollsMap[pollId]) return;
+    await castPollVote(pollId, optionId);
+    setVotedPollsMap(getLocalVotedPolls());
   };
 
-  const handleSubmitQuestion = (newQ: {
-    text: string;
-    targetSpeaker: string;
-    isAnonymous: boolean;
+  const handleSubmitQuestion = async (newQ: {
+    questionText: string;
+    delegateName: string;
+    sessionName: string;
   }) => {
-    const questionObj: QAQuestion = {
-      id: `q_${Date.now()}`,
-      author: newQ.isAnonymous ? 'Anonymous Supplier' : 'Mark Henderson',
-      role: newQ.isAnonymous ? 'Brand Partner' : 'Commercial Director · L’Oréal UK',
-      targetSpeaker: newQ.targetSpeaker,
-      text: newQ.text,
-      timestamp: 'Just now',
-      upvotes: 1,
-      isUpvoted: true,
-    };
-
-    setQaQuestions((prev) => [questionObj, ...prev]);
-  };
-
-  const handleToggleUpvote = (questionId: string) => {
-    setQaQuestions((prev) =>
-      prev.map((q) => {
-        if (q.id !== questionId) return q;
-        const isUpvoted = !q.isUpvoted;
-        return {
-          ...q,
-          isUpvoted,
-          upvotes: isUpvoted ? q.upvotes + 1 : Math.max(0, q.upvotes - 1),
-        };
-      })
-    );
-  };
-
-  const handleMarkAnswered = (questionId: string) => {
-    setQaQuestions((prev) =>
-      prev.map((q) => (q.id === questionId ? { ...q, answered: !q.answered } : q))
-    );
-  };
-
-  const handleDeleteQuestion = (questionId: string) => {
-    setQaQuestions((prev) => prev.filter((q) => q.id !== questionId));
+    await submitSpeakerQuestion(newQ);
   };
 
   const handleNavigateToInteractionsWithSpeaker = (speakerName?: string) => {
@@ -380,7 +317,6 @@ export default function App() {
         {/* Sticky Top Header */}
         <Header
           onOpenVenueMap={() => setShowVenueModal(true)}
-          onOpenInstallGuide={() => setShowInstallModal(true)}
           onOpenSplash={() => setShowSplash(true)}
           onOpenQRCode={() => setShowQRCodeModal(true)}
         />
@@ -410,11 +346,11 @@ export default function App() {
           {activeTab === 'interactions' && (
             <InteractionsView
               polls={polls}
-              qaQuestions={qaQuestions}
+              sessions={INITIAL_SESSIONS}
               speakers={FEATURED_SPEAKERS}
+              pollsError={pollsError}
               onVotePoll={handleVotePoll}
               onSubmitQuestion={handleSubmitQuestion}
-              onToggleUpvote={handleToggleUpvote}
               initialTargetSpeaker={targetSpeakerForQA}
             />
           )}
@@ -458,18 +394,10 @@ export default function App() {
           <VenueModal onClose={() => setShowVenueModal(false)} />
         )}
 
-        {showInstallModal && (
-          <PWAInstallGuideModal onClose={() => setShowInstallModal(false)} />
-        )}
-
         {isOrganizerUnlocked && showModeratorModal && (
           <ModeratorModal
             onClose={() => setShowModeratorModal(false)}
-            questions={qaQuestions}
             polls={polls}
-            onToggleUpvote={handleToggleUpvote}
-            onMarkAnswered={handleMarkAnswered}
-            onDeleteQuestion={handleDeleteQuestion}
             initialTab={moderatorTab}
             onLockOrganizer={handleLockOrganizer}
             onOpenBrandStudio={() => {

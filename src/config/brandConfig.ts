@@ -1,7 +1,7 @@
 /**
  * Central Brand & Event Configuration Engine
  * Allows any AI agent or human operator to rebrand, customize, and configure
- * the universal conference PWA without touching component code.
+ * the universal conference web app without touching component code.
  */
 
 export interface BrandConfig {
@@ -38,9 +38,9 @@ export interface BrandConfig {
     enableHub: boolean;
     enableRunningOrder: boolean;
     enableInteractions: boolean;
+    enableSpeakerQuestions: boolean;
     enableFloorMap: boolean;
     enableCalendarExport: boolean;
-    enablePWAInstall: boolean;
     enableStagePrompter: boolean;
   };
 }
@@ -72,9 +72,9 @@ export const BRAND_PRESETS: Record<string, BrandConfig> = {
       enableHub: true,
       enableRunningOrder: true,
       enableInteractions: true,
+      enableSpeakerQuestions: true,
       enableFloorMap: true,
       enableCalendarExport: true,
-      enablePWAInstall: true,
       enableStagePrompter: true,
     },
   },
@@ -104,9 +104,9 @@ export const BRAND_PRESETS: Record<string, BrandConfig> = {
       enableHub: true,
       enableRunningOrder: true,
       enableInteractions: true,
+      enableSpeakerQuestions: true,
       enableFloorMap: true,
       enableCalendarExport: true,
-      enablePWAInstall: true,
       enableStagePrompter: true,
     },
   },
@@ -138,9 +138,9 @@ export const BRAND_PRESETS: Record<string, BrandConfig> = {
       enableHub: true,
       enableRunningOrder: true,
       enableInteractions: true,
+      enableSpeakerQuestions: true,
       enableFloorMap: true,
       enableCalendarExport: true,
-      enablePWAInstall: true,
       enableStagePrompter: true,
     },
   },
@@ -171,9 +171,9 @@ export const BRAND_PRESETS: Record<string, BrandConfig> = {
       enableHub: true,
       enableRunningOrder: true,
       enableInteractions: true,
+      enableSpeakerQuestions: true,
       enableFloorMap: true,
       enableCalendarExport: true,
-      enablePWAInstall: true,
       enableStagePrompter: true,
     },
   },
