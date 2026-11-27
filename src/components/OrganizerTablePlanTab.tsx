@@ -97,15 +97,20 @@ export const OrganizerTablePlanTab: React.FC<OrganizerTablePlanTabProps> = ({
     setStatusBanner(null);
 
     try {
-      const { syncedToCloud } = await saveTablePlan({
+      const { syncedToCloud, syncReason } = await saveTablePlan({
         entries: preview.entries,
         fileName: preview.fileName,
       });
-      setStatusBanner(
-        syncedToCloud
-          ? `Table plan published to all devices (${preview.delegateCount} delegates across ${preview.tableCount} tables).`
-          : `Table plan saved on this device (${preview.delegateCount} delegates across ${preview.tableCount} tables). Cloud sync activates automatically once Firestore is created in Firebase Console.`
-      );
+      if (syncedToCloud) {
+        setStatusBanner(
+          `Table plan published to Firebase and synced live to all devices (${preview.delegateCount} delegates across ${preview.tableCount} tables).`
+        );
+      } else {
+        setActionError(
+          syncReason ||
+            `Table plan saved on this device (${preview.delegateCount} delegates), but could not sync to Firebase right now.`
+        );
+      }
       setPreview(null);
       setConfirmingClear(false);
     } catch (err) {
@@ -125,14 +130,16 @@ export const OrganizerTablePlanTab: React.FC<OrganizerTablePlanTabProps> = ({
     setStatusBanner(null);
 
     try {
-      const { syncedToCloud } = await clearTablePlan();
+      const { syncedToCloud, syncReason } = await clearTablePlan();
       setConfirmingClear(false);
       setListFilter('');
-      setStatusBanner(
-        syncedToCloud
-          ? 'Table plan cleared across all devices.'
-          : 'Table plan cleared on this device.'
-      );
+      if (syncedToCloud) {
+        setStatusBanner('Table plan cleared across all devices.');
+      } else {
+        setActionError(
+          syncReason || 'Table plan cleared on this device, but could not update Firebase.'
+        );
+      }
     } catch (err) {
       setActionError(
         err instanceof Error

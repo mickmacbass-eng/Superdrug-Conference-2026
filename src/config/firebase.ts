@@ -12,18 +12,37 @@ import {
 function readEnvString(key: string, fallback: string): string {
   try {
     const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
-    const val = env?.[key]?.trim();
+    const raw = env?.[key];
+    if (typeof raw !== 'string') return fallback;
+    const val = raw.replace(/^['"]+|['"]+$/g, '').trim();
     return val ? val : fallback;
   } catch {
     return fallback;
   }
 }
 
+function normalizeDatabaseId(raw: string): string {
+  const cleaned = raw.replace(/^['"]+|['"]+$/g, '').trim();
+  if (
+    !cleaned ||
+    cleaned.toLowerCase() === 'default' ||
+    cleaned.toLowerCase() === '(default)'
+  ) {
+    return '(default)';
+  }
+  return cleaned;
+}
+
+const resolvedProjectId = readEnvString('VITE_FIREBASE_PROJECT_ID', 'superdrug-2027');
+
 export const firebaseConfig = {
   apiKey: readEnvString('VITE_FIREBASE_API_KEY', 'AIzaSyDa8LizYMnSW0c-oXUu7_xZEvipVDpkvBk'),
-  authDomain: readEnvString('VITE_FIREBASE_AUTH_DOMAIN', 'superdrug-2027.firebaseapp.com'),
-  projectId: readEnvString('VITE_FIREBASE_PROJECT_ID', 'superdrug-2027'),
-  storageBucket: readEnvString('VITE_FIREBASE_STORAGE_BUCKET', 'superdrug-2027.firebasestorage.app'),
+  authDomain: readEnvString('VITE_FIREBASE_AUTH_DOMAIN', `${resolvedProjectId}.firebaseapp.com`),
+  projectId: resolvedProjectId,
+  storageBucket: readEnvString(
+    'VITE_FIREBASE_STORAGE_BUCKET',
+    `${resolvedProjectId}.firebasestorage.app`
+  ),
   messagingSenderId: readEnvString('VITE_FIREBASE_MESSAGING_SENDER_ID', '59337752033'),
   appId: readEnvString('VITE_FIREBASE_APP_ID', '1:59337752033:web:f4e9cacc12c637be1da6a0'),
   measurementId: readEnvString('VITE_FIREBASE_MEASUREMENT_ID', 'G-LECBV4P8WS'),
@@ -31,15 +50,13 @@ export const firebaseConfig = {
 
 /**
  * Target Firestore database ID.
- * Defaults to "(default)" unless VITE_FIREBASE_DATABASE_ID is configured for a named database.
+ * Defaults to "(default)" unless VITE_FIREBASE_DATABASE_ID is configured for a custom named database.
  */
-export const firestoreDatabaseId: string = readEnvString(
-  'VITE_FIREBASE_DATABASE_ID',
-  '(default)'
+export const firestoreDatabaseId: string = normalizeDatabaseId(
+  readEnvString('VITE_FIREBASE_DATABASE_ID', '(default)')
 );
 
-// Silence Firestore SDK console logs during initial availability probe so missing
-// databases never spam "Database '(default)' not found" warnings in the console.
+// Keep Firestore SDK logs quiet during initial probe so missing databases never spam warnings.
 setLogLevel('silent');
 
 let appInstance: FirebaseApp | null = null;
@@ -139,7 +156,7 @@ export function isPermissionDeniedError(error: unknown): boolean {
 
 /**
  * Cleanly shuts down the Firestore SDK instance and silences background retries
- * when the configured database does not exist or is unreachable.
+ * when the configured database does not exist in Firebase Console.
  */
 export function tripFirestoreCircuitBreaker(error?: unknown, customReason?: string): void {
   if (availabilityStatus === 'unavailable' && !activeDb) {
@@ -168,8 +185,9 @@ export function tripFirestoreCircuitBreaker(error?: unknown, customReason?: stri
 
 /**
  * Single guarded startup probe shared across all Firestore subscribers and mutations.
- * Prevents multiple listeners from spamming "Database '(default)' not found" warnings
- * when the target Firestore database hasn't been created in Firebase Console yet.
+ * - Trips the circuit breaker ONLY when the target database truly does not exist.
+ * - Keeps live Firestore active on slow cold-start handshakes or permission checks so
+ *   real-time listeners connect automatically without getting stuck in local fallback.
  */
 export function ensureFirestoreReady(): Promise<boolean> {
   if (availabilityStatus === 'ready' && activeDb) {
@@ -187,7 +205,7 @@ export function ensureFirestoreReady(): Promise<boolean> {
     try {
       await withTimeout(
         getDocFromServer(doc(probeDb, 'app_settings', 'organizer_security')),
-        3500,
+        7000,
         'Verify Firestore database'
       );
       availabilityStatus = 'ready';
@@ -195,16 +213,17 @@ export function ensureFirestoreReady(): Promise<boolean> {
       setLogLevel('error');
       return true;
     } catch (error) {
-      // A permission-denied response still confirms the target Firestore database exists
-      if (isPermissionDeniedError(error)) {
-        availabilityStatus = 'ready';
-        unavailableReason = null;
-        setLogLevel('error');
-        return true;
+      if (isDatabaseNotFoundError(error)) {
+        tripFirestoreCircuitBreaker(error);
+        return false;
       }
 
-      tripFirestoreCircuitBreaker(error);
-      return false;
+      // Permission-denied proves the database exists; transient cold-start timeouts
+      // should NOT permanently terminate Firestore so real-time listeners can connect.
+      availabilityStatus = 'ready';
+      unavailableReason = null;
+      setLogLevel('error');
+      return true;
     }
   })();
 

@@ -20,6 +20,7 @@ import {
   getActiveFirestore,
   getFirestoreAvailability,
   isDatabaseNotFoundError,
+  isPermissionDeniedError,
   OperationType,
   withTimeout,
 } from '../config/firebase';
@@ -33,7 +34,7 @@ const LOCAL_FEEDBACK_KEY = 'sd_fallback_event_feedback_v1';
 const LOCAL_POLLS_EVENT = 'sd:local-polls-updated';
 const LOCAL_FEEDBACK_EVENT = 'sd:local-feedback-updated';
 
-const WRITE_TIMEOUT_MS = 4500;
+const WRITE_TIMEOUT_MS = 8000;
 const INITIAL_SNAPSHOT_FALLBACK_MS = 2500;
 
 let hasAttemptedPollSeed = false;
@@ -317,8 +318,10 @@ export function subscribePolls(
       (error) => {
         formatFirestoreError(error, OperationType.LIST, 'polls');
         onData(readLocalPolls());
-        if (!isDatabaseNotFoundError(error)) {
-          onError?.('Live cloud sync paused — votes will still be recorded locally.');
+        if (isPermissionDeniedError(error)) {
+          onError?.('Firestore security rules are blocking live poll sync — allow read/write on polls in Firebase Console.');
+        } else if (!isDatabaseNotFoundError(error)) {
+          onError?.('Live cloud sync temporarily paused — votes will still be recorded locally.');
         }
       }
     );
@@ -924,8 +927,10 @@ export function subscribeEventFeedback(
           window.clearTimeout(fallbackTimer);
           formatFirestoreError(error, OperationType.LIST, 'event_feedback');
           emitMerged();
-          if (!isDatabaseNotFoundError(error)) {
-            onError?.('Live cloud sync paused — showing local feedback.');
+          if (isPermissionDeniedError(error)) {
+            onError?.('Firestore security rules are blocking feedback sync — allow read/write on event_feedback in Firebase Console.');
+          } else if (!isDatabaseNotFoundError(error)) {
+            onError?.('Live cloud sync temporarily paused — showing local feedback.');
           }
         }
       );
@@ -1324,8 +1329,10 @@ export function subscribeTablePlan(
           window.clearTimeout(fallbackTimer);
           formatFirestoreError(error, OperationType.GET, TABLE_PLAN_DOC_PATH);
           onData(readLocalTablePlan());
-          if (!isDatabaseNotFoundError(error)) {
-            onError?.('Live cloud sync paused — showing cached table plan.');
+          if (isPermissionDeniedError(error)) {
+            onError?.('Firestore security rules are blocking table plan reads — allow read/write on table_plan in Firebase Console.');
+          } else if (!isDatabaseNotFoundError(error)) {
+            onError?.('Live cloud sync temporarily paused — showing cached table plan.');
           }
         }
       );
@@ -1349,7 +1356,7 @@ export function subscribeTablePlan(
 export async function saveTablePlan(input: {
   entries: TablePlanEntry[];
   fileName: string | null;
-}): Promise<{ plan: TablePlanData; syncedToCloud: boolean }> {
+}): Promise<{ plan: TablePlanData; syncedToCloud: boolean; syncReason?: string }> {
   const sanitizedEntries = sanitizeTablePlanEntries(input.entries);
   const now = Date.now();
   const nextPlan: TablePlanData = {
@@ -1365,7 +1372,13 @@ export async function saveTablePlan(input: {
   const ready = await ensureFirestoreReady();
   const firestore = ready ? getActiveFirestore() : null;
   if (!firestore) {
-    return { plan: nextPlan, syncedToCloud: false };
+    return {
+      plan: nextPlan,
+      syncedToCloud: false,
+      syncReason:
+        getFirestoreAvailability().reason ||
+        'Saved on this device — Firestore cloud sync is currently unavailable.',
+    };
   }
 
   try {
@@ -1383,17 +1396,31 @@ export async function saveTablePlan(input: {
     return { plan: nextPlan, syncedToCloud: true };
   } catch (error) {
     formatFirestoreError(error, OperationType.WRITE, TABLE_PLAN_DOC_PATH);
-    return { plan: nextPlan, syncedToCloud: false };
+    return {
+      plan: nextPlan,
+      syncedToCloud: false,
+      syncReason: isPermissionDeniedError(error)
+        ? 'Saved on this device, but Firebase Firestore rules blocked writing to table_plan/current. Update your Firestore rules in Firebase Console to enable multi-device sync.'
+        : 'Saved on this device, but could not reach Firebase right now. Please check your connection and try publishing again.',
+    };
   }
 }
 
-export async function clearTablePlan(): Promise<{ syncedToCloud: boolean }> {
+export async function clearTablePlan(): Promise<{
+  syncedToCloud: boolean;
+  syncReason?: string;
+}> {
   writeLocalTablePlan(EMPTY_TABLE_PLAN);
 
   const ready = await ensureFirestoreReady();
   const firestore = ready ? getActiveFirestore() : null;
   if (!firestore) {
-    return { syncedToCloud: false };
+    return {
+      syncedToCloud: false,
+      syncReason:
+        getFirestoreAvailability().reason ||
+        'Cleared on this device — Firestore cloud sync is currently unavailable.',
+    };
   }
 
   try {
@@ -1411,6 +1438,11 @@ export async function clearTablePlan(): Promise<{ syncedToCloud: boolean }> {
     return { syncedToCloud: true };
   } catch (error) {
     formatFirestoreError(error, OperationType.WRITE, TABLE_PLAN_DOC_PATH);
-    return { syncedToCloud: false };
+    return {
+      syncedToCloud: false,
+      syncReason: isPermissionDeniedError(error)
+        ? 'Cleared on this device, but Firebase Firestore rules blocked updating table_plan/current.'
+        : 'Cleared on this device, but could not reach Firebase right now.',
+    };
   }
 }
