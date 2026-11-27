@@ -15,8 +15,11 @@ import {
   Unsubscribe,
 } from 'firebase/firestore';
 import {
-  db,
+  ensureFirestoreReady,
   formatFirestoreError,
+  getActiveFirestore,
+  getFirestoreAvailability,
+  isDatabaseNotFoundError,
   OperationType,
   withTimeout,
 } from '../config/firebase';
@@ -184,7 +187,8 @@ export function clearLocalPollVote(pollId: string): Record<string, string> {
 }
 
 async function seedDefaultPollsIfEmpty(): Promise<void> {
-  const firestore = db;
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
   if (!firestore || hasAttemptedPollSeed || werePollsInitialized()) return;
   hasAttemptedPollSeed = true;
 
@@ -225,6 +229,9 @@ export function subscribePolls(
   onData: (polls: Poll[]) => void,
   onError?: (message: string) => void
 ): Unsubscribe {
+  let cancelled = false;
+  let unsubFirestore: Unsubscribe = () => {};
+
   const handleLocalChange = () => {
     onData(readLocalPolls());
   };
@@ -233,19 +240,21 @@ export function subscribePolls(
     window.addEventListener(LOCAL_POLLS_EVENT, handleLocalChange);
   }
 
-  if (!db) {
-    onData(readLocalPolls());
-    return () => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener(LOCAL_POLLS_EVENT, handleLocalChange);
-      }
-    };
-  }
+  // Serve local/cached polls immediately so UI never blocks during probe
+  onData(readLocalPolls());
 
-  let unsubFirestore: Unsubscribe = () => {};
-  try {
-    unsubFirestore = onSnapshot(
-      collection(db, 'polls'),
+  void ensureFirestoreReady().then((ready) => {
+    if (cancelled) return;
+    if (!ready) {
+      return;
+    }
+
+    const firestore = getActiveFirestore();
+    if (!firestore) return;
+
+    try {
+      unsubFirestore = onSnapshot(
+        collection(firestore, 'polls'),
       (snapshot) => {
         if (snapshot.empty) {
           if (!werePollsInitialized()) {
@@ -308,15 +317,19 @@ export function subscribePolls(
       (error) => {
         formatFirestoreError(error, OperationType.LIST, 'polls');
         onData(readLocalPolls());
-        onError?.('Live cloud sync paused — votes will still be recorded locally.');
+        if (!isDatabaseNotFoundError(error)) {
+          onError?.('Live cloud sync paused — votes will still be recorded locally.');
+        }
       }
     );
-  } catch (error) {
-    formatFirestoreError(error, OperationType.LIST, 'polls');
-    onData(readLocalPolls());
-  }
+    } catch (error) {
+      formatFirestoreError(error, OperationType.LIST, 'polls');
+      onData(readLocalPolls());
+    }
+  });
 
   return () => {
+    cancelled = true;
     unsubFirestore();
     if (typeof window !== 'undefined') {
       window.removeEventListener(LOCAL_POLLS_EVENT, handleLocalChange);
@@ -346,15 +359,17 @@ export async function castPollVote(pollId: string, optionId: string): Promise<vo
     writeLocalPolls(localPolls);
   };
 
-  if (!db) {
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
     voteLocally();
     return;
   }
 
-  const pollRef = doc(db, 'polls', pollId);
+  const pollRef = doc(firestore, 'polls', pollId);
   try {
     await withTimeout(
-      runTransaction(db, async (transaction) => {
+      runTransaction(firestore, async (transaction) => {
         const snap = await transaction.get(pollRef);
 
         if (!snap.exists()) {
@@ -431,12 +446,14 @@ export async function resetPollVotes(poll: Poll): Promise<void> {
     writeLocalPolls(localPolls);
   };
 
-  if (!db) {
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
     resetLocally();
     return;
   }
 
-  const pollRef = doc(db, 'polls', poll.id);
+  const pollRef = doc(firestore, 'polls', poll.id);
   try {
     await withTimeout(
       updateDoc(pollRef, {
@@ -469,12 +486,14 @@ export async function setPollResultsRevealed(
     writeLocalPolls(localPolls);
   };
 
-  if (!db) {
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
     updateLocally();
     return;
   }
 
-  const pollRef = doc(db, 'polls', poll.id);
+  const pollRef = doc(firestore, 'polls', poll.id);
   try {
     await withTimeout(
       setDoc(
@@ -549,13 +568,15 @@ export async function createPoll(input: {
     return pollId;
   };
 
-  if (!db) {
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
     return saveLocally();
   }
 
   try {
     await withTimeout(
-      setDoc(doc(db, 'polls', pollId), {
+      setDoc(doc(firestore, 'polls', pollId), {
         question,
         sessionTitle,
         order,
@@ -629,7 +650,9 @@ export async function updatePoll(
     writeLocalPolls(localPolls);
   };
 
-  if (!db) {
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
     updateLocally();
     return;
   }
@@ -637,7 +660,7 @@ export async function updatePoll(
   try {
     await withTimeout(
       setDoc(
-        doc(db, 'polls', poll.id),
+        doc(firestore, 'polls', poll.id),
         {
           question,
           sessionTitle,
@@ -665,7 +688,9 @@ export async function setPollActive(poll: Poll, isActive: boolean): Promise<void
     writeLocalPolls(localPolls);
   };
 
-  if (!db) {
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
     updateLocally();
     return;
   }
@@ -673,7 +698,7 @@ export async function setPollActive(poll: Poll, isActive: boolean): Promise<void
   try {
     await withTimeout(
       setDoc(
-        doc(db, 'polls', poll.id),
+        doc(firestore, 'polls', poll.id),
         {
           question: poll.question,
           sessionTitle: poll.sessionTitle,
@@ -705,14 +730,16 @@ export async function deletePoll(pollId: string): Promise<void> {
     writeLocalPolls(localPolls);
   };
 
-  if (!db) {
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
     deleteLocally();
     return;
   }
 
   try {
     await withTimeout(
-      deleteDoc(doc(db, 'polls', pollId)),
+      deleteDoc(doc(firestore, 'polls', pollId)),
       WRITE_TIMEOUT_MS,
       'Delete poll'
     );
@@ -759,7 +786,9 @@ export async function submitEventFeedback(
     return localId;
   };
 
-  if (!db) {
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
     return saveLocally();
   }
 
@@ -767,7 +796,7 @@ export async function submitEventFeedback(
     if (existingDocId && !existingDocId.startsWith('local_fb_')) {
       await withTimeout(
         setDoc(
-          doc(db, 'event_feedback', existingDocId),
+          doc(firestore, 'event_feedback', existingDocId),
           {
             ...payload,
             updatedAt: serverTimestamp(),
@@ -782,7 +811,7 @@ export async function submitEventFeedback(
     }
 
     const docRef = await withTimeout(
-      addDoc(collection(db, 'event_feedback'), {
+      addDoc(collection(firestore, 'event_feedback'), {
         ...payload,
         updatedAt: serverTimestamp(),
         createdAt: serverTimestamp(),
@@ -818,82 +847,97 @@ export function subscribeEventFeedback(
     onData(merged);
   };
 
+  let cancelled = false;
+  let unsubFirestore: Unsubscribe = () => {};
+
   const handleLocalChange = () => emitMerged();
   if (typeof window !== 'undefined') {
     window.addEventListener(LOCAL_FEEDBACK_EVENT, handleLocalChange);
   }
 
-  if (!db) {
-    emitMerged();
-    return () => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener(LOCAL_FEEDBACK_EVENT, handleLocalChange);
-      }
-    };
-  }
+  // Immediately emit local feedback so Organiser Desk never stalls
+  emitMerged();
 
   const fallbackTimer = window.setTimeout(() => {
-    if (!hasRemoteSnapshot) {
+    if (!hasRemoteSnapshot && !cancelled) {
       emitMerged();
     }
   }, INITIAL_SNAPSHOT_FALLBACK_MS);
 
-  let unsubFirestore: Unsubscribe = () => {};
-  try {
-    const q = query(collection(db, 'event_feedback'), orderBy('createdAt', 'desc'));
-    unsubFirestore = onSnapshot(
-      q,
-      (snapshot) => {
-        hasRemoteSnapshot = true;
-        window.clearTimeout(fallbackTimer);
-        remoteItems = snapshot.docs.map((snap) => {
-          const data = snap.data();
-          const ts = timestampToMs(data.createdAt);
-          const overall = typeof data.overallRating === 'number' ? data.overallRating : 5;
-          const rawCats =
-            data.categoryRatings && typeof data.categoryRatings === 'object'
-              ? (data.categoryRatings as Record<string, unknown>)
-              : {};
+  void ensureFirestoreReady().then((ready) => {
+    if (cancelled) return;
+    if (!ready) {
+      window.clearTimeout(fallbackTimer);
+      emitMerged();
+      return;
+    }
 
-          return {
-            id: snap.id,
-            overallRating: overall,
-            categoryRatings: {
-              content: typeof rawCats.content === 'number' ? rawCats.content : overall,
-              venue: typeof rawCats.venue === 'number' ? rawCats.venue : overall,
-              organization: typeof rawCats.organization === 'number' ? rawCats.organization : overall,
-            },
-            selectedTags: Array.isArray(data.selectedTags)
-              ? data.selectedTags.filter((t): t is string => typeof t === 'string')
-              : [],
-            comment: typeof data.comment === 'string' ? data.comment : '',
-            name: typeof data.name === 'string' ? data.name : 'Anonymous Delegate',
-            company: typeof data.company === 'string' ? data.company : '',
-            isAnonymous: Boolean(data.isAnonymous),
-            submittedAt:
-              typeof data.submittedAt === 'string' && data.submittedAt
-                ? data.submittedAt
-                : formatTimeLabel(ts),
-            timestamp: ts,
-          };
-        });
-        emitMerged();
-      },
-      (error) => {
-        hasRemoteSnapshot = true;
-        window.clearTimeout(fallbackTimer);
-        formatFirestoreError(error, OperationType.LIST, 'event_feedback');
-        emitMerged();
-        onError?.('Live cloud sync paused — showing local feedback.');
-      }
-    );
-  } catch (error) {
-    window.clearTimeout(fallbackTimer);
-    formatFirestoreError(error, OperationType.LIST, 'event_feedback');
-    emitMerged();
-  }
+    const firestore = getActiveFirestore();
+    if (!firestore) {
+      window.clearTimeout(fallbackTimer);
+      emitMerged();
+      return;
+    }
+
+    try {
+      const q = query(collection(firestore, 'event_feedback'), orderBy('createdAt', 'desc'));
+      unsubFirestore = onSnapshot(
+        q,
+        (snapshot) => {
+          hasRemoteSnapshot = true;
+          window.clearTimeout(fallbackTimer);
+          remoteItems = snapshot.docs.map((snap) => {
+            const data = snap.data();
+            const ts = timestampToMs(data.createdAt);
+            const overall = typeof data.overallRating === 'number' ? data.overallRating : 5;
+            const rawCats =
+              data.categoryRatings && typeof data.categoryRatings === 'object'
+                ? (data.categoryRatings as Record<string, unknown>)
+                : {};
+
+            return {
+              id: snap.id,
+              overallRating: overall,
+              categoryRatings: {
+                content: typeof rawCats.content === 'number' ? rawCats.content : overall,
+                venue: typeof rawCats.venue === 'number' ? rawCats.venue : overall,
+                organization: typeof rawCats.organization === 'number' ? rawCats.organization : overall,
+              },
+              selectedTags: Array.isArray(data.selectedTags)
+                ? data.selectedTags.filter((t): t is string => typeof t === 'string')
+                : [],
+              comment: typeof data.comment === 'string' ? data.comment : '',
+              name: typeof data.name === 'string' ? data.name : 'Anonymous Delegate',
+              company: typeof data.company === 'string' ? data.company : '',
+              isAnonymous: Boolean(data.isAnonymous),
+              submittedAt:
+                typeof data.submittedAt === 'string' && data.submittedAt
+                  ? data.submittedAt
+                  : formatTimeLabel(ts),
+              timestamp: ts,
+            };
+          });
+          emitMerged();
+        },
+        (error) => {
+          hasRemoteSnapshot = true;
+          window.clearTimeout(fallbackTimer);
+          formatFirestoreError(error, OperationType.LIST, 'event_feedback');
+          emitMerged();
+          if (!isDatabaseNotFoundError(error)) {
+            onError?.('Live cloud sync paused — showing local feedback.');
+          }
+        }
+      );
+    } catch (error) {
+      window.clearTimeout(fallbackTimer);
+      formatFirestoreError(error, OperationType.LIST, 'event_feedback');
+      emitMerged();
+    }
+  });
 
   return () => {
+    cancelled = true;
     window.clearTimeout(fallbackTimer);
     unsubFirestore();
     if (typeof window !== 'undefined') {
@@ -910,14 +954,21 @@ export async function deleteEventFeedback(feedbackId: string): Promise<void> {
     }
   };
 
-  if (!db || feedbackId.startsWith('local_fb_')) {
+  if (feedbackId.startsWith('local_fb_')) {
+    deleteLocally();
+    return;
+  }
+
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
     deleteLocally();
     return;
   }
 
   try {
     await withTimeout(
-      deleteDoc(doc(db, 'event_feedback', feedbackId)),
+      deleteDoc(doc(firestore, 'event_feedback', feedbackId)),
       WRITE_TIMEOUT_MS,
       'Delete event feedback'
     );
@@ -1010,7 +1061,10 @@ function parseOrganizerSecurityDoc(
 
 export async function fetchOrganizerPasscodeConfig(): Promise<OrganizerPasscodeConfig> {
   const now = Date.now();
-  if (!db) {
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
+    const availability = getFirestoreAvailability();
     return {
       source: 'default',
       passcodeHash: null,
@@ -1018,13 +1072,15 @@ export async function fetchOrganizerPasscodeConfig(): Promise<OrganizerPasscodeC
       usesHashedStorage: false,
       updatedAtMs: null,
       lastSyncedAt: now,
-      syncError: 'Firebase is unavailable — using built-in event passcode.',
+      syncError:
+        availability.reason ||
+        'Using built-in event passcode — Firestore cloud sync is not active yet.',
     };
   }
 
   try {
     const snap = await withTimeout(
-      getDoc(doc(db, OWNER_SECURITY_COLLECTION, OWNER_SECURITY_DOC_ID)),
+      getDoc(doc(firestore, OWNER_SECURITY_COLLECTION, OWNER_SECURITY_DOC_ID)),
       SECURITY_FETCH_TIMEOUT_MS,
       'Fetch organizer passcode config'
     );
@@ -1041,7 +1097,9 @@ export async function fetchOrganizerPasscodeConfig(): Promise<OrganizerPasscodeC
       usesHashedStorage: false,
       updatedAtMs: null,
       lastSyncedAt: now,
-      syncError: 'Unable to reach Firebase right now — using cached or default passcode.',
+      syncError:
+        getFirestoreAvailability().reason ||
+        'Unable to reach Firebase right now — using cached or default passcode.',
     };
   }
 }
@@ -1049,46 +1107,64 @@ export async function fetchOrganizerPasscodeConfig(): Promise<OrganizerPasscodeC
 export function subscribeOrganizerPasscodeConfig(
   onData: (config: OrganizerPasscodeConfig) => void
 ): Unsubscribe {
-  if (!db) {
-    onData({
-      source: 'default',
-      passcodeHash: null,
-      plaintextPasscode: null,
-      usesHashedStorage: false,
-      updatedAtMs: null,
-      lastSyncedAt: Date.now(),
-      syncError: 'Firebase is unavailable — using built-in event passcode.',
-    });
-    return () => {};
-  }
+  let cancelled = false;
+  let unsubFirestore: Unsubscribe = () => {};
 
-  try {
-    return onSnapshot(
-      doc(db, OWNER_SECURITY_COLLECTION, OWNER_SECURITY_DOC_ID),
-      (snap) => {
-        if (!snap.exists()) {
-          onData(parseOrganizerSecurityDoc(undefined));
-          return;
+  void ensureFirestoreReady().then((ready) => {
+    if (cancelled) return;
+    if (!ready) {
+      const availability = getFirestoreAvailability();
+      onData({
+        source: 'default',
+        passcodeHash: null,
+        plaintextPasscode: null,
+        usesHashedStorage: false,
+        updatedAtMs: null,
+        lastSyncedAt: Date.now(),
+        syncError:
+          availability.reason ||
+          'Using built-in event passcode — Firestore cloud sync is not active yet.',
+      });
+      return;
+    }
+
+    const firestore = getActiveFirestore();
+    if (!firestore) return;
+
+    try {
+      unsubFirestore = onSnapshot(
+        doc(firestore, OWNER_SECURITY_COLLECTION, OWNER_SECURITY_DOC_ID),
+        (snap) => {
+          if (!snap.exists()) {
+            onData(parseOrganizerSecurityDoc(undefined));
+            return;
+          }
+          onData(parseOrganizerSecurityDoc(snap.data() as Record<string, unknown>));
+        },
+        (error) => {
+          formatFirestoreError(error, OperationType.GET, OWNER_SECURITY_DOC_PATH);
+          onData({
+            source: 'default',
+            passcodeHash: null,
+            plaintextPasscode: null,
+            usesHashedStorage: false,
+            updatedAtMs: null,
+            lastSyncedAt: Date.now(),
+            syncError:
+              getFirestoreAvailability().reason ||
+              'Live Firebase sync paused — using cached or default passcode.',
+          });
         }
-        onData(parseOrganizerSecurityDoc(snap.data() as Record<string, unknown>));
-      },
-      (error) => {
-        formatFirestoreError(error, OperationType.GET, OWNER_SECURITY_DOC_PATH);
-        onData({
-          source: 'default',
-          passcodeHash: null,
-          plaintextPasscode: null,
-          usesHashedStorage: false,
-          updatedAtMs: null,
-          lastSyncedAt: Date.now(),
-          syncError: 'Live Firebase sync paused — using cached or default passcode.',
-        });
-      }
-    );
-  } catch (error) {
-    formatFirestoreError(error, OperationType.GET, OWNER_SECURITY_DOC_PATH);
-    return () => {};
-  }
+      );
+    } catch (error) {
+      formatFirestoreError(error, OperationType.GET, OWNER_SECURITY_DOC_PATH);
+    }
+  });
+
+  return () => {
+    cancelled = true;
+    unsubFirestore();
+  };
 }
 
 // ============================================================================
@@ -1182,7 +1258,9 @@ export function subscribeTablePlan(
   onData: (plan: TablePlanData) => void,
   onError?: (message: string) => void
 ): Unsubscribe {
+  let cancelled = false;
   let hasRemoteSnapshot = false;
+  let unsubFirestore: Unsubscribe = () => {};
 
   const handleLocalChange = () => {
     onData(readLocalTablePlan());
@@ -1192,62 +1270,74 @@ export function subscribeTablePlan(
     window.addEventListener(LOCAL_TABLE_PLAN_EVENT, handleLocalChange);
   }
 
-  if (!db) {
-    onData(readLocalTablePlan());
-    return () => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener(LOCAL_TABLE_PLAN_EVENT, handleLocalChange);
-      }
-    };
-  }
+  // Immediately serve cached local table plan while probe runs
+  onData(readLocalTablePlan());
 
   const fallbackTimer = window.setTimeout(() => {
-    if (!hasRemoteSnapshot) {
+    if (!hasRemoteSnapshot && !cancelled) {
       onData(readLocalTablePlan());
     }
   }, INITIAL_SNAPSHOT_FALLBACK_MS);
 
-  let unsubFirestore: Unsubscribe = () => {};
-  try {
-    unsubFirestore = onSnapshot(
-      doc(db, TABLE_PLAN_COLLECTION, TABLE_PLAN_DOC_ID),
-      (snap) => {
-        hasRemoteSnapshot = true;
-        window.clearTimeout(fallbackTimer);
+  void ensureFirestoreReady().then((ready) => {
+    if (cancelled) return;
+    if (!ready) {
+      window.clearTimeout(fallbackTimer);
+      onData(readLocalTablePlan());
+      return;
+    }
 
-        if (!snap.exists()) {
-          writeLocalTablePlan(EMPTY_TABLE_PLAN);
-          onData(EMPTY_TABLE_PLAN);
-          return;
+    const firestore = getActiveFirestore();
+    if (!firestore) {
+      window.clearTimeout(fallbackTimer);
+      onData(readLocalTablePlan());
+      return;
+    }
+
+    try {
+      unsubFirestore = onSnapshot(
+        doc(firestore, TABLE_PLAN_COLLECTION, TABLE_PLAN_DOC_ID),
+        (snap) => {
+          hasRemoteSnapshot = true;
+          window.clearTimeout(fallbackTimer);
+
+          if (!snap.exists()) {
+            writeLocalTablePlan(EMPTY_TABLE_PLAN);
+            onData(EMPTY_TABLE_PLAN);
+            return;
+          }
+
+          const data = snap.data() as Record<string, unknown>;
+          const entries = sanitizeTablePlanEntries(data.entries);
+          const plan: TablePlanData = {
+            entries,
+            fileName: typeof data.fileName === 'string' ? data.fileName : null,
+            delegateCount: entries.length,
+            tableCount: countUniqueTables(entries),
+            updatedAt: data.updatedAt ? timestampToMs(data.updatedAt) : null,
+          };
+          writeLocalTablePlan(plan);
+          onData(plan);
+        },
+        (error) => {
+          hasRemoteSnapshot = true;
+          window.clearTimeout(fallbackTimer);
+          formatFirestoreError(error, OperationType.GET, TABLE_PLAN_DOC_PATH);
+          onData(readLocalTablePlan());
+          if (!isDatabaseNotFoundError(error)) {
+            onError?.('Live cloud sync paused — showing cached table plan.');
+          }
         }
-
-        const data = snap.data() as Record<string, unknown>;
-        const entries = sanitizeTablePlanEntries(data.entries);
-        const plan: TablePlanData = {
-          entries,
-          fileName: typeof data.fileName === 'string' ? data.fileName : null,
-          delegateCount: entries.length,
-          tableCount: countUniqueTables(entries),
-          updatedAt: data.updatedAt ? timestampToMs(data.updatedAt) : null,
-        };
-        writeLocalTablePlan(plan);
-        onData(plan);
-      },
-      (error) => {
-        hasRemoteSnapshot = true;
-        window.clearTimeout(fallbackTimer);
-        formatFirestoreError(error, OperationType.GET, TABLE_PLAN_DOC_PATH);
-        onData(readLocalTablePlan());
-        onError?.('Live cloud sync paused — showing cached table plan.');
-      }
-    );
-  } catch (error) {
-    window.clearTimeout(fallbackTimer);
-    formatFirestoreError(error, OperationType.GET, TABLE_PLAN_DOC_PATH);
-    onData(readLocalTablePlan());
-  }
+      );
+    } catch (error) {
+      window.clearTimeout(fallbackTimer);
+      formatFirestoreError(error, OperationType.GET, TABLE_PLAN_DOC_PATH);
+      onData(readLocalTablePlan());
+    }
+  });
 
   return () => {
+    cancelled = true;
     window.clearTimeout(fallbackTimer);
     unsubFirestore();
     if (typeof window !== 'undefined') {
@@ -1259,7 +1349,7 @@ export function subscribeTablePlan(
 export async function saveTablePlan(input: {
   entries: TablePlanEntry[];
   fileName: string | null;
-}): Promise<TablePlanData> {
+}): Promise<{ plan: TablePlanData; syncedToCloud: boolean }> {
   const sanitizedEntries = sanitizeTablePlanEntries(input.entries);
   const now = Date.now();
   const nextPlan: TablePlanData = {
@@ -1272,13 +1362,15 @@ export async function saveTablePlan(input: {
 
   writeLocalTablePlan(nextPlan);
 
-  if (!db) {
-    return nextPlan;
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
+    return { plan: nextPlan, syncedToCloud: false };
   }
 
   try {
     await withTimeout(
-      setDoc(doc(db, TABLE_PLAN_COLLECTION, TABLE_PLAN_DOC_ID), {
+      setDoc(doc(firestore, TABLE_PLAN_COLLECTION, TABLE_PLAN_DOC_ID), {
         entries: sanitizedEntries,
         fileName: input.fileName,
         delegateCount: nextPlan.delegateCount,
@@ -1288,25 +1380,25 @@ export async function saveTablePlan(input: {
       WRITE_TIMEOUT_MS,
       'Save table plan'
     );
-    return nextPlan;
+    return { plan: nextPlan, syncedToCloud: true };
   } catch (error) {
     formatFirestoreError(error, OperationType.WRITE, TABLE_PLAN_DOC_PATH);
-    throw new Error(
-      'Saved locally, but could not sync to Firebase right now. Please check your connection and try again.'
-    );
+    return { plan: nextPlan, syncedToCloud: false };
   }
 }
 
-export async function clearTablePlan(): Promise<void> {
+export async function clearTablePlan(): Promise<{ syncedToCloud: boolean }> {
   writeLocalTablePlan(EMPTY_TABLE_PLAN);
 
-  if (!db) {
-    return;
+  const ready = await ensureFirestoreReady();
+  const firestore = ready ? getActiveFirestore() : null;
+  if (!firestore) {
+    return { syncedToCloud: false };
   }
 
   try {
     await withTimeout(
-      setDoc(doc(db, TABLE_PLAN_COLLECTION, TABLE_PLAN_DOC_ID), {
+      setDoc(doc(firestore, TABLE_PLAN_COLLECTION, TABLE_PLAN_DOC_ID), {
         entries: [],
         fileName: null,
         delegateCount: 0,
@@ -1316,10 +1408,9 @@ export async function clearTablePlan(): Promise<void> {
       WRITE_TIMEOUT_MS,
       'Clear table plan'
     );
+    return { syncedToCloud: true };
   } catch (error) {
     formatFirestoreError(error, OperationType.WRITE, TABLE_PLAN_DOC_PATH);
-    throw new Error(
-      'Cleared locally, but could not clear Firebase right now. Please check your connection and try again.'
-    );
+    return { syncedToCloud: false };
   }
 }

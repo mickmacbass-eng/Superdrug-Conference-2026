@@ -97,12 +97,14 @@ export const OrganizerTablePlanTab: React.FC<OrganizerTablePlanTabProps> = ({
     setStatusBanner(null);
 
     try {
-      await saveTablePlan({
+      const { syncedToCloud } = await saveTablePlan({
         entries: preview.entries,
         fileName: preview.fileName,
       });
       setStatusBanner(
-        `Table plan published to all devices (${preview.delegateCount} delegates across ${preview.tableCount} tables).`
+        syncedToCloud
+          ? `Table plan published to all devices (${preview.delegateCount} delegates across ${preview.tableCount} tables).`
+          : `Table plan saved on this device (${preview.delegateCount} delegates across ${preview.tableCount} tables). Cloud sync activates automatically once Firestore is created in Firebase Console.`
       );
       setPreview(null);
       setConfirmingClear(false);
@@ -123,10 +125,14 @@ export const OrganizerTablePlanTab: React.FC<OrganizerTablePlanTabProps> = ({
     setStatusBanner(null);
 
     try {
-      await clearTablePlan();
+      const { syncedToCloud } = await clearTablePlan();
       setConfirmingClear(false);
       setListFilter('');
-      setStatusBanner('Table plan cleared across all devices.');
+      setStatusBanner(
+        syncedToCloud
+          ? 'Table plan cleared across all devices.'
+          : 'Table plan cleared on this device.'
+      );
     } catch (err) {
       setActionError(
         err instanceof Error
