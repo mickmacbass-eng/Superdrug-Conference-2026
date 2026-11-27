@@ -1,13 +1,33 @@
 /**
- * Lightweight client-side Organizer authentication helper.
- * Works 100% statically (e.g. IONOS Webspace) with SHA-256 digest verification
- * and per-tab sessionStorage unlock state.
+ * Owner-locked Organizer authentication helper.
+ *
+ * Passcodes are read-only from the app UI and synced globally across all
+ * devices from Firebase Firestore (`app_settings/organizer_security`), managed
+ * exclusively by the event owner in Firebase Console. All client-side passcode
+ * editing and browser-local overrides have been removed.
  */
+
+import {
+  fetchOrganizerPasscodeConfig,
+  OrganizerPasscodeConfig,
+  subscribeOrganizerPasscodeConfig,
+} from '../services/firestoreService';
 
 export const DEFAULT_ORGANIZER_PASSCODE = 'SUPERDRUG2026';
 
 const SESSION_UNLOCK_KEY = 'sd_organizer_session_unlocked';
-const PASSCODE_HASH_PREFIX = 'sd_organizer_passcode_hash_';
+const LEGACY_PASSCODE_HASH_PREFIX = 'sd_organizer_passcode_hash_';
+const PASSCODE_STATUS_EVENT = 'sd:organizer-passcode-status-updated';
+
+export interface OrganizerPasscodeStatus {
+  source: 'firebase' | 'default';
+  usesHashedStorage: boolean;
+  updatedAtMs: number | null;
+  lastSyncedAt: number | null;
+  syncError: string | null;
+}
+
+let cachedPasscodeConfig: OrganizerPasscodeConfig | null = null;
 
 /**
  * Pure-JS SHA-256 fallback for environments where crypto.subtle is unavailable
@@ -102,58 +122,128 @@ export async function hashPasscode(passcode: string): Promise<string> {
   return sha256Fallback(normalized);
 }
 
-function getBrandHashKey(brandId: string): string {
-  return `${PASSCODE_HASH_PREFIX}${brandId || 'default'}`;
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
-export function hasCustomOrganizerPasscode(brandId: string): boolean {
+/**
+ * Removes any legacy browser-local passcode overrides so no device can bypass
+ * the centrally synced owner passcode.
+ */
+export function clearLegacyLocalPasscodeOverrides(): void {
   try {
-    return Boolean(localStorage.getItem(getBrandHashKey(brandId)));
+    if (typeof localStorage === 'undefined') return;
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(LEGACY_PASSCODE_HASH_PREFIX)) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((key) => localStorage.removeItem(key));
   } catch {
-    return false;
+    // ignore storage errors
   }
 }
 
-export async function verifyOrganizerPasscode(
-  input: string,
-  brandId: string
-): Promise<boolean> {
+function toSafeStatus(config: OrganizerPasscodeConfig | null): OrganizerPasscodeStatus {
+  if (!config) {
+    return {
+      source: 'default',
+      usesHashedStorage: false,
+      updatedAtMs: null,
+      lastSyncedAt: null,
+      syncError: null,
+    };
+  }
+  return {
+    source: config.source,
+    usesHashedStorage: config.usesHashedStorage,
+    updatedAtMs: config.updatedAtMs,
+    lastSyncedAt: config.lastSyncedAt,
+    syncError: config.syncError,
+  };
+}
+
+function applyPasscodeConfig(next: OrganizerPasscodeConfig): void {
+  // Preserve last known Firebase config if a transient network error occurred
+  if (next.syncError && cachedPasscodeConfig?.source === 'firebase') {
+    cachedPasscodeConfig = {
+      ...cachedPasscodeConfig,
+      lastSyncedAt: next.lastSyncedAt,
+      syncError: next.syncError,
+    };
+  } else {
+    cachedPasscodeConfig = next;
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(PASSCODE_STATUS_EVENT));
+  }
+}
+
+export function getOrganizerPasscodeStatus(): OrganizerPasscodeStatus {
+  return toSafeStatus(cachedPasscodeConfig);
+}
+
+export function subscribeOrganizerPasscodeStatus(
+  listener: (status: OrganizerPasscodeStatus) => void
+): () => void {
+  const handleUpdate = () => listener(getOrganizerPasscodeStatus());
+  if (typeof window !== 'undefined') {
+    window.addEventListener(PASSCODE_STATUS_EVENT, handleUpdate);
+  }
+  listener(getOrganizerPasscodeStatus());
+  return () => {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener(PASSCODE_STATUS_EVENT, handleUpdate);
+    }
+  };
+}
+
+export function initOrganizerPasscodeSync(): () => void {
+  clearLegacyLocalPasscodeOverrides();
+  return subscribeOrganizerPasscodeConfig((remoteConfig) => {
+    applyPasscodeConfig(remoteConfig);
+  });
+}
+
+export async function refreshOrganizerPasscodeSync(): Promise<OrganizerPasscodeStatus> {
+  clearLegacyLocalPasscodeOverrides();
+  const latest = await fetchOrganizerPasscodeConfig();
+  applyPasscodeConfig(latest);
+  return getOrganizerPasscodeStatus();
+}
+
+export async function verifyOrganizerPasscode(input: string): Promise<boolean> {
+  clearLegacyLocalPasscodeOverrides();
   const candidate = input.trim();
   if (!candidate) return false;
 
-  const candidateHash = await hashPasscode(candidate);
+  // Fetch fresh owner security record from Firebase before verifying
+  const latest = await fetchOrganizerPasscodeConfig();
+  applyPasscodeConfig(latest);
 
-  try {
-    const customHash = localStorage.getItem(getBrandHashKey(brandId));
-    if (customHash) {
-      return candidateHash === customHash;
+  const activeConfig = cachedPasscodeConfig ?? latest;
+  const candidateHash = (await hashPasscode(candidate)).toLowerCase();
+
+  if (activeConfig.source === 'firebase') {
+    if (activeConfig.passcodeHash) {
+      return constantTimeEqual(candidateHash, activeConfig.passcodeHash.toLowerCase());
     }
-  } catch {
-    // fallback to default passcode verification
+    if (activeConfig.plaintextPasscode) {
+      const expectedHash = (await hashPasscode(activeConfig.plaintextPasscode)).toLowerCase();
+      return constantTimeEqual(candidateHash, expectedHash);
+    }
   }
 
-  const defaultHash = await hashPasscode(DEFAULT_ORGANIZER_PASSCODE);
-  return candidateHash === defaultHash;
-}
-
-export async function setCustomOrganizerPasscode(
-  newPasscode: string,
-  brandId: string
-): Promise<void> {
-  const cleaned = newPasscode.trim();
-  if (cleaned.length < 4) {
-    throw new Error('Passcode must be at least 4 characters long.');
-  }
-  const digest = await hashPasscode(cleaned);
-  localStorage.setItem(getBrandHashKey(brandId), digest);
-}
-
-export function resetOrganizerPasscode(brandId: string): void {
-  try {
-    localStorage.removeItem(getBrandHashKey(brandId));
-  } catch {
-    // ignore
-  }
+  const defaultHash = (await hashPasscode(DEFAULT_ORGANIZER_PASSCODE)).toLowerCase();
+  return constantTimeEqual(candidateHash, defaultHash);
 }
 
 export function isOrganizerSessionUnlocked(): boolean {

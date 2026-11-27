@@ -45,7 +45,7 @@ export const OrganizerAuthModal: React.FC<OrganizerAuthModalProps> = ({
     setErrorMessage(null);
 
     try {
-      const valid = await verifyOrganizerPasscode(passcode, config.id);
+      const valid = await verifyOrganizerPasscode(passcode);
       if (valid) {
         onAuthenticated();
       } else {

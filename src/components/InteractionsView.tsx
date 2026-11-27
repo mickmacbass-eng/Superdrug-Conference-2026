@@ -1,78 +1,34 @@
-import React, { useEffect, useState } from 'react';
-import { Poll, Session, Speaker } from '../data/conferenceData';
+import React, { useState } from 'react';
+import { Poll, Speaker } from '../data/conferenceData';
 import {
   Vote,
-  MessageSquare,
-  Send,
   Users,
   CheckCircle2,
-  Lock,
   Loader2,
   AlertCircle,
+  Eye,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { useBrand } from '../config/BrandContext';
+import { PollResultsPieChart, POLL_CHART_COLORS } from './PollResultsPieChart';
 
 interface InteractionsViewProps {
   polls: Poll[];
-  sessions: Session[];
   speakers: Speaker[];
   pollsError?: string | null;
   onVotePoll: (pollId: string, optionId: string) => Promise<void>;
-  onSubmitQuestion: (newQuestion: {
-    questionText: string;
-    delegateName: string;
-    sessionName: string;
-  }) => Promise<void>;
-  initialTargetSpeaker?: string;
 }
 
 export const InteractionsView: React.FC<InteractionsViewProps> = ({
   polls,
-  sessions,
   speakers,
   pollsError,
   onVotePoll,
-  onSubmitQuestion,
-  initialTargetSpeaker,
 }) => {
-  const { config } = useBrand();
-  const speakerQuestionsEnabled = config.features.enableSpeakerQuestions !== false;
-
-  const [activeTab, setActiveTab] = useState<'polls' | 'qa' | 'speakers'>(
-    initialTargetSpeaker && speakerQuestionsEnabled ? 'qa' : 'polls'
-  );
+  const [activeTab, setActiveTab] = useState<'polls' | 'speakers'>('polls');
 
   // Live poll submission states
   const [votingPollId, setVotingPollId] = useState<string | null>(null);
   const [voteError, setVoteError] = useState<string | null>(null);
-
-  // Private speaker question form state
-  const nonBreakSessions = sessions.filter((s) => !s.isBreak);
-  const defaultSessionName =
-    initialTargetSpeaker ||
-    (nonBreakSessions[0] ? `${nonBreakSessions[0].title} (${nonBreakSessions[0].presenters})` : 'Executive Keynote Panel');
-
-  const [questionText, setQuestionText] = useState('');
-  const [sessionName, setSessionName] = useState(defaultSessionName);
-  const [delegateName, setDelegateName] = useState('');
-  const [isAnonymous, setIsAnonymous] = useState(false);
-  const [isSubmittingQuestion, setIsSubmittingQuestion] = useState(false);
-  const [submittedToast, setSubmittedToast] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!speakerQuestionsEnabled && activeTab === 'qa') {
-      setActiveTab('polls');
-    }
-  }, [speakerQuestionsEnabled, activeTab]);
-
-  useEffect(() => {
-    if (initialTargetSpeaker && speakerQuestionsEnabled) {
-      setSessionName(initialTargetSpeaker);
-      setActiveTab('qa');
-    }
-  }, [initialTargetSpeaker, speakerQuestionsEnabled]);
 
   const handleVote = async (pollId: string, optionId: string, alreadyVoted: boolean) => {
     if (alreadyVoted || votingPollId === pollId) return;
@@ -98,32 +54,6 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
     }
   };
 
-  const handleQuestionSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmedQuestion = questionText.trim();
-    if (!trimmedQuestion || isSubmittingQuestion) return;
-
-    setIsSubmittingQuestion(true);
-    setSubmitError(null);
-    setSubmittedToast(false);
-
-    try {
-      await onSubmitQuestion({
-        questionText: trimmedQuestion,
-        delegateName: isAnonymous ? 'Anonymous' : delegateName.trim() || 'Anonymous',
-        sessionName,
-      });
-
-      setQuestionText('');
-      setSubmittedToast(true);
-      setTimeout(() => setSubmittedToast(false), 5000);
-    } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Unable to send question.');
-    } finally {
-      setIsSubmittingQuestion(false);
-    }
-  };
-
   return (
     <div className="space-y-5 pb-4">
       {/* Title & Segmented Sub-Navigation */}
@@ -133,9 +63,7 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
             Interactions
           </h1>
           <p className="text-xs text-neutral-500 mt-0.5">
-            {speakerQuestionsEnabled
-              ? 'Live audience polling, private speaker Q&A & speaker directory'
-              : 'Live audience polling & keynote speaker directory'}
+            Live audience polling &amp; keynote speaker directory
           </p>
         </div>
 
@@ -153,21 +81,6 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
             <Vote className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'polls' ? 'text-[#E5007D]' : ''}`} />
             <span>Live Polls</span>
           </button>
-
-          {speakerQuestionsEnabled && (
-            <button
-              type="button"
-              onClick={() => setActiveTab('qa')}
-              className={`flex-1 min-h-[40px] py-2 text-xs font-bold rounded-xl transition-all tap-highlight flex items-center justify-center gap-1.5 whitespace-nowrap ${
-                activeTab === 'qa'
-                  ? 'bg-black text-white shadow-sm'
-                  : 'text-neutral-600 hover:text-black'
-              }`}
-            >
-              <MessageSquare className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'qa' ? 'text-[#E5007D]' : ''}`} />
-              <span>Ask Speaker</span>
-            </button>
-          )}
 
           <button
             type="button"
@@ -201,8 +114,18 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
             </div>
           )}
 
-          {polls.map((poll) => {
+          {polls.length === 0 ? (
+            <div className="border border-dashed border-neutral-200 rounded-3xl p-8 bg-neutral-50/70 text-center space-y-2">
+              <Vote className="w-7 h-7 text-neutral-400 mx-auto" />
+              <h3 className="text-sm font-bold text-black">No Live Polls Open Right Now</h3>
+              <p className="text-xs text-neutral-500 max-w-xs mx-auto leading-relaxed">
+                Check back during the next stage session — new floor polls appear here automatically as soon as the host activates them.
+              </p>
+            </div>
+          ) : polls.map((poll) => {
             const hasVoted = Boolean(poll.userVotedOptionId);
+            const isRevealed = Boolean(poll.resultsRevealed);
+            const showResults = hasVoted || isRevealed;
             const isVotingThisPoll = votingPollId === poll.id;
 
             return (
@@ -211,8 +134,16 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
                 className="border border-neutral-200 rounded-3xl p-5 bg-white space-y-4 shadow-sm"
               >
                 <div>
-                  <div className="text-[11px] font-semibold text-neutral-500 mb-1">
-                    {poll.sessionTitle}
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-[11px] font-semibold text-neutral-500">
+                      {poll.sessionTitle}
+                    </span>
+                    {isRevealed && !hasVoted && (
+                      <span className="text-[11px] font-bold text-[#E5007D] flex items-center gap-1 whitespace-nowrap shrink-0">
+                        <Eye className="w-3 h-3" />
+                        Results Live
+                      </span>
+                    )}
                   </div>
                   <h3 className="text-base font-bold text-black leading-snug">
                     {poll.question}
@@ -221,12 +152,13 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
 
                 {/* Poll Options */}
                 <div className="space-y-2.5">
-                  {poll.options.map((option) => {
+                  {poll.options.map((option, optIndex) => {
                     const isSelected = poll.userVotedOptionId === option.id;
                     const percentage =
                       poll.totalVotes > 0
                         ? Math.round((option.votes / poll.totalVotes) * 100)
                         : 0;
+                    const sliceColor = POLL_CHART_COLORS[optIndex % POLL_CHART_COLORS.length];
 
                     return (
                       <button
@@ -243,12 +175,13 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
                         }`}
                       >
                         {/* Dynamic Progress Bar Fill */}
-                        {hasVoted && (
+                        {showResults && (
                           <div
-                            className={`absolute left-0 top-0 bottom-0 opacity-15 transition-all duration-500 ${
-                              isSelected ? 'bg-[#E5007D]' : 'bg-neutral-400'
-                            }`}
-                            style={{ width: `${percentage}%` }}
+                            className="absolute left-0 top-0 bottom-0 opacity-12 transition-all duration-500"
+                            style={{
+                              width: `${percentage}%`,
+                              backgroundColor: sliceColor,
+                            }}
                           />
                         )}
 
@@ -274,7 +207,7 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
                             </span>
                           </div>
 
-                          {hasVoted && (
+                          {showResults && (
                             <span className="font-mono text-xs font-bold text-black tabular-nums shrink-0">
                               {percentage}%
                             </span>
@@ -284,6 +217,14 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
                     );
                   })}
                 </div>
+
+                {/* Recharts Pie Chart Visualization (when voted or moderator reveals results) */}
+                {showResults && (
+                  <PollResultsPieChart
+                    poll={poll}
+                    revealedByModerator={isRevealed && !hasVoted}
+                  />
+                )}
 
                 {/* Poll Footer */}
                 <div className="flex items-center justify-between pt-2 border-t border-neutral-100 text-xs text-neutral-500">
@@ -300,6 +241,10 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
                       <CheckCircle2 className="w-3.5 h-3.5" />
                       Vote recorded · Live results
                     </span>
+                  ) : isRevealed ? (
+                    <span className="text-neutral-600 font-medium">
+                      Results revealed · Tap to vote
+                    </span>
                   ) : (
                     <span className="text-neutral-400 font-medium">
                       Tap once to cast your vote
@@ -312,160 +257,7 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
         </div>
       )}
 
-      {/* TAB 2: PRIVATE SPEAKER Q&A (Questions hidden from regular delegates) */}
-      {speakerQuestionsEnabled && activeTab === 'qa' && (
-        <div className="space-y-4">
-          <form
-            onSubmit={handleQuestionSubmit}
-            className="border-2 border-neutral-200 rounded-3xl p-5 bg-white space-y-4 shadow-sm"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-bold uppercase tracking-wider text-black">
-                Submit a Question to Speakers
-              </span>
-              <span className="text-[11px] font-medium text-neutral-500 flex items-center gap-1 whitespace-nowrap shrink-0">
-                <Lock className="w-3 h-3 text-[#E5007D]" />
-                Private to Moderator
-              </span>
-            </div>
-
-            {/* Session / Speaker Selector */}
-            <div>
-              <label
-                htmlFor="qa-session-select"
-                className="text-[11px] text-neutral-600 font-semibold block mb-1"
-              >
-                Session or Speaker
-              </label>
-              <select
-                id="qa-session-select"
-                value={sessionName}
-                onChange={(e) => setSessionName(e.target.value)}
-                className="w-full min-h-[44px] text-xs px-3 py-2 rounded-xl border border-neutral-200 bg-white text-black focus:outline-none focus:border-black font-medium"
-              >
-                <option value="Executive Keynote Panel">Executive Keynote Panel</option>
-                <optgroup label="Conference Sessions">
-                  {nonBreakSessions.map((s) => (
-                    <option key={s.id} value={`${s.title} (${s.presenters})`}>
-                      {s.time} · {s.title} — {s.presenters}
-                    </option>
-                  ))}
-                </optgroup>
-                <optgroup label="Keynote Speakers">
-                  {speakers.map((sp) => (
-                    <option key={sp.id} value={`${sp.name} (${sp.role})`}>
-                      {sp.name} — {sp.role}
-                    </option>
-                  ))}
-                </optgroup>
-              </select>
-            </div>
-
-            {/* Delegate Name + Anonymous Toggle */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <label
-                  htmlFor="qa-delegate-name"
-                  className="text-[11px] text-neutral-600 font-semibold"
-                >
-                  Your Name (optional)
-                </label>
-                <label className="flex items-center gap-1.5 text-xs text-neutral-700 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={isAnonymous}
-                    onChange={(e) => setIsAnonymous(e.target.checked)}
-                    className="rounded border-neutral-300 text-black focus:ring-0 w-4 h-4 cursor-pointer accent-[#E5007D]"
-                  />
-                  <span>Submit anonymously</span>
-                </label>
-              </div>
-
-              {!isAnonymous && (
-                <input
-                  id="qa-delegate-name"
-                  type="text"
-                  value={delegateName}
-                  onChange={(e) => setDelegateName(e.target.value)}
-                  maxLength={80}
-                  placeholder="e.g. Sarah Jenkins, L'Oréal UK"
-                  className="w-full min-h-[44px] text-xs px-3 py-2 rounded-xl border border-neutral-200 bg-white text-black placeholder:text-neutral-400 focus:outline-none focus:border-black"
-                />
-              )}
-            </div>
-
-            {/* Question Input */}
-            <div>
-              <label
-                htmlFor="qa-question-input"
-                className="text-[11px] text-neutral-600 font-semibold block mb-1"
-              >
-                Your Question
-              </label>
-              <textarea
-                id="qa-question-input"
-                value={questionText}
-                onChange={(e) => setQuestionText(e.target.value)}
-                placeholder="Ask an executive or panel speaker a question..."
-                rows={4}
-                maxLength={280}
-                className="w-full text-xs p-3 rounded-2xl border border-neutral-200 focus:outline-none focus:border-black text-black placeholder:text-neutral-400 transition-colors resize-none"
-              />
-            </div>
-
-            {submitError && (
-              <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                <span>{submitError}</span>
-              </div>
-            )}
-
-            {submittedToast && (
-              <div
-                role="status"
-                className="p-3 bg-neutral-900 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2"
-              >
-                <CheckCircle2 className="w-4 h-4 text-[#E5007D] shrink-0" />
-                <span>Question sent to the moderator</span>
-              </div>
-            )}
-
-            <div className="pt-1 flex items-center justify-between gap-3">
-              <span className="text-[11px] text-neutral-400 tabular-nums">
-                {280 - questionText.length} characters left
-              </span>
-
-              <button
-                type="submit"
-                disabled={!questionText.trim() || isSubmittingQuestion}
-                className="min-h-[44px] bg-[#E5007D] text-white text-xs font-bold py-2.5 px-5 rounded-full shadow-sm hover:bg-[#c4006b] active:scale-95 disabled:opacity-40 disabled:pointer-events-none transition-all flex items-center gap-1.5 tap-highlight whitespace-nowrap shrink-0"
-              >
-                {isSubmittingQuestion ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Sending...</span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-3.5 h-3.5" />
-                    <span>Submit Question</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </form>
-
-          {/* Privacy Assurance Note (replaces public delegate Q&A feed) */}
-          <div className="border border-neutral-200 rounded-2xl p-4 bg-neutral-50 text-xs text-neutral-600 leading-relaxed space-y-1">
-            <div className="font-bold text-black">Private Stage Queue</div>
-            <p className="text-[11px]">
-              Submitted questions are routed privately to the conference moderator desk for live review and are not displayed publicly to other attendees.
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 3: SPEAKERS DIRECT ENGAGEMENT */}
+      {/* TAB 2: KEYNOTE SPEAKERS DIRECTORY */}
       {activeTab === 'speakers' && (
         <div className="space-y-4">
           <div className="px-1">
@@ -500,22 +292,6 @@ export const InteractionsView: React.FC<InteractionsViewProps> = ({
                 </div>
 
                 <p className="text-xs text-neutral-600 leading-relaxed">{sp.bio}</p>
-
-                {speakerQuestionsEnabled && (
-                  <div className="pt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSessionName(`${sp.name} (${sp.role})`);
-                        setActiveTab('qa');
-                      }}
-                      className="w-full min-h-[44px] bg-[#E5007D] text-white text-xs font-bold py-2.5 px-4 rounded-full shadow-sm hover:bg-[#c4006b] active:scale-95 transition-all tap-highlight flex items-center justify-center gap-1.5"
-                    >
-                      <MessageSquare className="w-3.5 h-3.5" />
-                      <span>Direct Question to {sp.name}</span>
-                    </button>
-                  </div>
-                )}
               </div>
             ))}
           </div>

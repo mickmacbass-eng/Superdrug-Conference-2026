@@ -1,57 +1,62 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Poll, CONFERENCE_INFO } from '../data/conferenceData';
+import { INITIAL_SESSIONS, Poll } from '../data/conferenceData';
 import {
   Shield,
-  Tv,
-  CheckCircle,
-  Pin,
-  Minimize2,
   Trash2,
   X,
   Download,
   Star,
   BarChart3,
-  MessageSquare,
   Search,
-  Filter,
   CheckCircle2,
-  Building2,
-  Calendar,
-  Sparkles,
   TrendingUp,
   Lock,
   KeyRound,
   Palette,
   AlertCircle,
   Loader2,
-  ThumbsUp,
   RotateCcw,
+  Eye,
+  EyeOff,
+  Plus,
+  Pencil,
+  Radio,
+  Pause,
+  Check,
+  RefreshCw,
+  Armchair,
 } from 'lucide-react';
+import { OrganizerTablePlanTab } from './OrganizerTablePlanTab';
 import {
   downloadFeedbackCSV,
   FeedbackSubmission,
 } from '../data/feedbackData';
 import { useBrand } from '../config/BrandContext';
 import {
-  setCustomOrganizerPasscode,
-  resetOrganizerPasscode,
-  hasCustomOrganizerPasscode,
+  getOrganizerPasscodeStatus,
+  OrganizerPasscodeStatus,
+  refreshOrganizerPasscodeSync,
+  subscribeOrganizerPasscodeStatus,
 } from '../utils/organizerAuth';
 import {
-  SpeakerQuestion,
-  SpeakerQuestionStatus,
-  subscribeSpeakerQuestions,
-  updateSpeakerQuestionStatus,
-  deleteSpeakerQuestion,
+  OWNER_SECURITY_DOC_PATH,
   subscribeEventFeedback,
   deleteEventFeedback,
   resetPollVotes,
+  setPollResultsRevealed,
+  createPoll,
+  updatePoll,
+  setPollActive,
+  deletePoll,
+  TablePlanData,
+  EMPTY_TABLE_PLAN,
 } from '../services/firestoreService';
 
 interface ModeratorModalProps {
   onClose: () => void;
   polls: Poll[];
-  initialTab?: 'questions' | 'polls' | 'feedback';
+  tablePlan?: TablePlanData;
+  initialTab?: 'feedback' | 'polls' | 'tables';
   onLockOrganizer?: () => void;
   onOpenBrandStudio?: () => void;
 }
@@ -59,28 +64,22 @@ interface ModeratorModalProps {
 export const ModeratorModal: React.FC<ModeratorModalProps> = ({
   onClose,
   polls,
-  initialTab = 'questions',
+  tablePlan = EMPTY_TABLE_PLAN,
+  initialTab = 'feedback',
   onLockOrganizer,
   onOpenBrandStudio,
 }) => {
   const { config } = useBrand();
-  const [activeTab, setActiveTab] = useState<'questions' | 'polls' | 'feedback'>(initialTab);
-  const [stageModeActive, setStageModeActive] = useState(false);
-
-  // Real-time Firestore speaker_questions state (ONLY subscribed while unlocked modal is mounted)
-  const [questions, setQuestions] = useState<SpeakerQuestion[]>([]);
-  const [questionsLoading, setQuestionsLoading] = useState(true);
-  const [questionsError, setQuestionsError] = useState<string | null>(null);
-  const [questionStatusFilter, setQuestionStatusFilter] = useState<'all' | SpeakerQuestionStatus>('all');
-  const [pinnedQuestionId, setPinnedQuestionId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'feedback' | 'polls' | 'tables'>(initialTab);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Passcode management panel state
+  // Read-only owner-locked passcode sync panel state
   const [showPasscodePanel, setShowPasscodePanel] = useState(false);
-  const [newPasscode, setNewPasscode] = useState('');
-  const [confirmPasscode, setConfirmPasscode] = useState('');
-  const [passcodeMessage, setPasscodeMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [isCustomPasscode, setIsCustomPasscode] = useState(() => hasCustomOrganizerPasscode(config.id));
+  const [passcodeStatus, setPasscodeStatus] = useState<OrganizerPasscodeStatus>(() =>
+    getOrganizerPasscodeStatus()
+  );
+  const [refreshingPasscodeSync, setRefreshingPasscodeSync] = useState(false);
+  const [syncVerifiedNotice, setSyncVerifiedNotice] = useState(false);
 
   // Real-time Firestore event_feedback state
   const [feedbackList, setFeedbackList] = useState<FeedbackSubmission[]>([]);
@@ -91,24 +90,34 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
   const [selectedTagFilter, setSelectedTagFilter] = useState<string | null>(null);
   const [downloadSuccessToast, setDownloadSuccessToast] = useState(false);
   const [resettingPollId, setResettingPollId] = useState<string | null>(null);
+  const [togglingRevealPollId, setTogglingRevealPollId] = useState<string | null>(null);
+  const [togglingActivePollId, setTogglingActivePollId] = useState<string | null>(null);
+  const [confirmDeletePollId, setConfirmDeletePollId] = useState<string | null>(null);
+  const [deletingPollId, setDeletingPollId] = useState<string | null>(null);
 
-  // Subscribe to Firestore speaker_questions (ordered by createdAt desc)
-  useEffect(() => {
-    setQuestionsLoading(true);
-    setQuestionsError(null);
-    const unsubscribe = subscribeSpeakerQuestions(
-      (items) => {
-        setQuestions(items);
-        setQuestionsLoading(false);
-        setQuestionsError(null);
-      },
-      (errMessage) => {
-        setQuestionsLoading(false);
-        setQuestionsError(errMessage);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
+  // Poll Composer state (new draft poll)
+  const sessionOptions = useMemo(
+    () => [
+      'General Conference Plenary',
+      ...INITIAL_SESSIONS.filter((s) => !s.isBreak).map((s) => `${s.time} · ${s.title}`),
+    ],
+    []
+  );
+  const [showNewPollForm, setShowNewPollForm] = useState(false);
+  const [newPollSession, setNewPollSession] = useState('General Conference Plenary');
+  const [newPollCustomSession, setNewPollCustomSession] = useState('');
+  const [newPollQuestion, setNewPollQuestion] = useState('');
+  const [newPollOptions, setNewPollOptions] = useState<string[]>(['', '']);
+  const [creatingPoll, setCreatingPoll] = useState(false);
+  const [pollFormError, setPollFormError] = useState<string | null>(null);
+
+  // Inline Edit Poll state
+  const [editingPollId, setEditingPollId] = useState<string | null>(null);
+  const [editSessionTitle, setEditSessionTitle] = useState('');
+  const [editQuestion, setEditQuestion] = useState('');
+  const [editOptions, setEditOptions] = useState<{ id?: string; text: string; votes?: number }[]>([]);
+  const [savingEditPoll, setSavingEditPoll] = useState(false);
+  const [editFormError, setEditFormError] = useState<string | null>(null);
 
   // Subscribe to Firestore event_feedback (ordered by createdAt desc)
   useEffect(() => {
@@ -128,40 +137,12 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
     return () => unsubscribe();
   }, []);
 
-  const filteredQuestions = useMemo(() => {
-    const statusOrder: Record<SpeakerQuestionStatus, number> = {
-      approved: 0,
-      pending: 1,
-      answered: 2,
-    };
-    return questions
-      .filter((q) => (questionStatusFilter === 'all' ? true : q.status === questionStatusFilter))
-      .sort((a, b) => {
-        if (questionStatusFilter === 'all' && statusOrder[a.status] !== statusOrder[b.status]) {
-          return statusOrder[a.status] - statusOrder[b.status];
-        }
-        return b.createdAtMs - a.createdAtMs;
-      });
-  }, [questions, questionStatusFilter]);
-
-  const pinnedQuestion =
-    questions.find((q) => q.id === pinnedQuestionId) ||
-    questions.find((q) => q.status === 'approved') ||
-    questions.find((q) => q.status === 'pending') ||
-    questions[0];
-
-  const pendingCount = useMemo(
-    () => questions.filter((q) => q.status === 'pending').length,
-    [questions]
-  );
-  const approvedCount = useMemo(
-    () => questions.filter((q) => q.status === 'approved').length,
-    [questions]
-  );
-  const answeredCount = useMemo(
-    () => questions.filter((q) => q.status === 'answered').length,
-    [questions]
-  );
+  // Subscribe to live owner-locked passcode sync status
+  useEffect(() => {
+    return subscribeOrganizerPasscodeStatus((status) => {
+      setPasscodeStatus(status);
+    });
+  }, []);
 
   // Feedback Analytics Calculations
   const metrics = useMemo(() => {
@@ -244,27 +225,6 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
     }
   };
 
-  const handleSetQuestionStatus = async (questionId: string, status: SpeakerQuestionStatus) => {
-    setActionError(null);
-    try {
-      await updateSpeakerQuestionStatus(questionId, status);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Unable to update question status.');
-    }
-  };
-
-  const handleDeleteQuestion = async (questionId: string) => {
-    setActionError(null);
-    try {
-      await deleteSpeakerQuestion(questionId);
-      if (pinnedQuestionId === questionId) {
-        setPinnedQuestionId(null);
-      }
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Unable to delete question.');
-    }
-  };
-
   const handleDeleteFeedback = async (id: string) => {
     setActionError(null);
     try {
@@ -286,125 +246,150 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
     }
   };
 
-  // 1. STAGE CONFIDENCE MONITOR MODE (Full-screen for stage podium / prompter)
-  if (stageModeActive) {
-    return (
-      <div className="fixed inset-0 z-50 bg-black text-white p-6 flex flex-col justify-between overflow-y-auto">
-        {/* Stage Top Bar */}
-        <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
-          <div className="flex items-center gap-3">
-            <div className="w-3 h-3 rounded-full bg-[#E5007D] animate-ping" />
-            <span className="text-xs font-bold tracking-widest uppercase text-[#E5007D]">
-              STAGE CONFIDENCE MONITOR · THE PORTER TUN
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setStageModeActive(false)}
-              className="text-xs bg-neutral-800 hover:bg-neutral-700 text-white font-bold px-3 py-1.5 rounded-full flex items-center gap-1.5"
-            >
-              <Minimize2 className="w-3.5 h-3.5" />
-              <span>Back to Moderator Desk</span>
-            </button>
-            <button
-              onClick={onClose}
-              className="text-neutral-400 hover:text-white p-1"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-
-        {/* Big Screen Active Question */}
-        {pinnedQuestion ? (
-          <div className="my-auto py-8 max-w-3xl mx-auto w-full space-y-6">
-            <div className="flex items-center justify-between text-neutral-400 text-xs border-b border-neutral-800 pb-2">
-              <div className="flex items-center gap-2">
-                <span className="text-white font-bold">{pinnedQuestion.delegateName}</span>
-                <span>·</span>
-                <span>{pinnedQuestion.createdAtLabel}</span>
-              </div>
-              <div className="font-mono font-bold text-[#E5007D] text-xs uppercase tracking-wider">
-                Status: {pinnedQuestion.status}
-              </div>
-            </div>
-
-            <div className="text-xs font-bold text-[#E5007D] uppercase tracking-wider">
-              Session / Speaker: {pinnedQuestion.sessionName}
-            </div>
-
-            <blockquote className="text-2xl sm:text-4xl font-extrabold tracking-tight leading-snug text-white">
-              &ldquo;{pinnedQuestion.questionText}&rdquo;
-            </blockquote>
-
-            <div className="flex items-center gap-3 pt-4">
-              <button
-                onClick={async () => {
-                  await handleSetQuestionStatus(pinnedQuestion.id, 'answered');
-                  const nextQ = questions.find(
-                    (q) => q.id !== pinnedQuestion.id && q.status !== 'answered'
-                  );
-                  setPinnedQuestionId(nextQ ? nextQ.id : null);
-                }}
-                className="bg-[#E5007D] text-white text-sm font-bold py-3 px-6 rounded-full flex items-center gap-2 hover:bg-[#c4006b] shadow-lg tap-highlight cursor-pointer"
-              >
-                <CheckCircle className="w-4 h-4" />
-                <span>Mark Question Answered &amp; Next</span>
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="text-center my-auto py-12 text-neutral-500">
-            No questions currently in stage queue.
-          </div>
-        )}
-
-        {/* Stage Bottom Status */}
-        <div className="border-t border-neutral-800 pt-3 flex items-center justify-between text-xs text-neutral-400">
-          <span>{CONFERENCE_INFO.name} · {CONFERENCE_INFO.dateShort}</span>
-          <span className="font-mono text-neutral-300">
-            {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  const handleUpdatePasscode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPasscodeMessage(null);
-    const trimmed = newPasscode.trim();
-    if (trimmed.length < 4) {
-      setPasscodeMessage({ type: 'error', text: 'Passcode must be at least 4 characters.' });
-      return;
-    }
-    if (trimmed !== confirmPasscode.trim()) {
-      setPasscodeMessage({ type: 'error', text: 'Passcodes do not match.' });
-      return;
-    }
+  const handleToggleRevealPoll = async (poll: Poll) => {
+    setTogglingRevealPollId(poll.id);
+    setActionError(null);
     try {
-      await setCustomOrganizerPasscode(trimmed, config.id);
-      setIsCustomPasscode(true);
-      setNewPasscode('');
-      setConfirmPasscode('');
-      setPasscodeMessage({ type: 'success', text: 'Organizer passcode updated.' });
-      setTimeout(() => setPasscodeMessage(null), 3000);
+      await setPollResultsRevealed(poll, !poll.resultsRevealed);
     } catch (err) {
-      setPasscodeMessage({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Unable to update passcode.',
-      });
+      setActionError(err instanceof Error ? err.message : 'Unable to update poll result visibility.');
+    } finally {
+      setTogglingRevealPollId(null);
     }
   };
 
-  const handleResetPasscode = () => {
-    resetOrganizerPasscode(config.id);
-    setIsCustomPasscode(false);
-    setNewPasscode('');
-    setConfirmPasscode('');
-    setPasscodeMessage({ type: 'success', text: 'Passcode reset to default.' });
-    setTimeout(() => setPasscodeMessage(null), 3000);
+  const handleToggleActivePoll = async (poll: Poll) => {
+    setTogglingActivePollId(poll.id);
+    setActionError(null);
+    try {
+      const currentlyActive = poll.isActive !== false;
+      await setPollActive(poll, !currentlyActive);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Unable to update poll live status.');
+    } finally {
+      setTogglingActivePollId(null);
+    }
+  };
+
+  const handleCreatePoll = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPollFormError(null);
+    const resolvedSession =
+      newPollSession === '__custom__'
+        ? newPollCustomSession.trim() || 'General Conference Plenary'
+        : newPollSession;
+    const validOptions = newPollOptions.map((o) => o.trim()).filter(Boolean);
+
+    if (!newPollQuestion.trim()) {
+      setPollFormError('Please enter a poll question.');
+      return;
+    }
+    if (validOptions.length < 2) {
+      setPollFormError('Please enter at least 2 answer options.');
+      return;
+    }
+
+    setCreatingPoll(true);
+    setActionError(null);
+    try {
+      await createPoll({
+        question: newPollQuestion,
+        sessionTitle: resolvedSession,
+        options: validOptions,
+        isActive: false, // Hidden draft until organiser activates it
+        order: polls.length + 1,
+      });
+      setNewPollQuestion('');
+      setNewPollOptions(['', '']);
+      setNewPollCustomSession('');
+      setShowNewPollForm(false);
+    } catch (err) {
+      setPollFormError(err instanceof Error ? err.message : 'Unable to create poll.');
+    } finally {
+      setCreatingPoll(false);
+    }
+  };
+
+  const startEditingPoll = (poll: Poll) => {
+    setShowNewPollForm(false);
+    setConfirmDeletePollId(null);
+    setEditFormError(null);
+    setEditingPollId(poll.id);
+    setEditSessionTitle(poll.sessionTitle);
+    setEditQuestion(poll.question);
+    setEditOptions(poll.options.map((o) => ({ id: o.id, text: o.text, votes: o.votes })));
+  };
+
+  const handleSaveEditPoll = async (e: React.FormEvent, poll: Poll) => {
+    e.preventDefault();
+    setEditFormError(null);
+    const validOptions = editOptions.filter((o) => o.text.trim().length > 0);
+    if (!editQuestion.trim()) {
+      setEditFormError('Please enter a poll question.');
+      return;
+    }
+    if (validOptions.length < 2) {
+      setEditFormError('Please keep at least 2 non-empty answer options.');
+      return;
+    }
+
+    setSavingEditPoll(true);
+    setActionError(null);
+    try {
+      await updatePoll(poll, {
+        question: editQuestion,
+        sessionTitle: editSessionTitle,
+        options: validOptions.map((o) => ({ id: o.id, text: o.text })),
+      });
+      setEditingPollId(null);
+    } catch (err) {
+      setEditFormError(err instanceof Error ? err.message : 'Unable to update poll.');
+    } finally {
+      setSavingEditPoll(false);
+    }
+  };
+
+  const handleConfirmDeletePoll = async (pollId: string) => {
+    setDeletingPollId(pollId);
+    setActionError(null);
+    try {
+      await deletePoll(pollId);
+      setConfirmDeletePollId(null);
+      if (editingPollId === pollId) {
+        setEditingPollId(null);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Unable to delete poll.');
+    } finally {
+      setDeletingPollId(null);
+    }
+  };
+
+  const handleRefreshPasscodeSync = async () => {
+    setRefreshingPasscodeSync(true);
+    setSyncVerifiedNotice(false);
+    try {
+      const updated = await refreshOrganizerPasscodeSync();
+      setPasscodeStatus(updated);
+      if (!updated.syncError) {
+        setSyncVerifiedNotice(true);
+        setTimeout(() => setSyncVerifiedNotice(false), 3000);
+      }
+    } finally {
+      setRefreshingPasscodeSync(false);
+    }
+  };
+
+  const formatSyncTime = (ms: number | null): string => {
+    if (!ms) return 'Not checked yet';
+    try {
+      return new Date(ms).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return 'Just now';
+    }
   };
 
   // 2. ORGANIZER & MODERATOR DESK (Protected by OrganizerAuthModal)
@@ -428,17 +413,6 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap">
-            {activeTab === 'questions' && (
-              <button
-                onClick={() => setStageModeActive(true)}
-                className="bg-black text-white hover:bg-neutral-800 text-xs font-bold py-1.5 px-3 rounded-full flex items-center gap-1.5 tap-highlight whitespace-nowrap shrink-0"
-                title="Launch Stage Confidence Monitor"
-              >
-                <Tv className="w-3.5 h-3.5 text-[#E5007D]" />
-                <span className="hidden xs:inline">Stage Screen</span>
-              </button>
-            )}
-
             {activeTab === 'feedback' && (
               <button
                 onClick={handleExportCSV}
@@ -466,14 +440,14 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
               type="button"
               onClick={() => {
                 setShowPasscodePanel((prev) => !prev);
-                setPasscodeMessage(null);
+                setSyncVerifiedNotice(false);
               }}
               className={`text-xs font-bold py-1.5 px-2.5 rounded-full border flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 ${
                 showPasscodePanel
                   ? 'bg-neutral-900 text-white border-neutral-900'
                   : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-100'
               }`}
-              title="Change organizer passcode"
+              title="View owner-locked passcode status"
             >
               <KeyRound className="w-3.5 h-3.5 shrink-0" />
               <span className="hidden sm:inline">Passcode</span>
@@ -501,119 +475,137 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
           </div>
         </div>
 
-        {/* Collapsible Passcode Settings Panel */}
+        {/* Read-Only Owner-Locked Passcode Status Panel */}
         {showPasscodePanel && (
-          <form
-            onSubmit={handleUpdatePasscode}
-            className="mt-3 p-3.5 rounded-2xl bg-neutral-50 border border-neutral-200 space-y-3"
-          >
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div>
-                <div className="text-xs font-bold text-black">Change Organizer Passcode</div>
-                <div className="text-[11px] text-neutral-500">
-                  {isCustomPasscode
-                    ? 'Custom passcode active on this device.'
-                    : 'Using default event passcode.'}
+          <div className="mt-3 p-4 rounded-2xl bg-neutral-50 border border-neutral-200 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-black">
+                  <Lock className="w-3.5 h-3.5 text-[#E5007D] shrink-0" />
+                  <span>Owner-Locked Passcode</span>
                 </div>
+                <p className="text-xs text-neutral-600 leading-relaxed">
+                  Passcode editing is disabled in-app. Only the event owner can rotate the organiser passcode via Firebase, and updates apply automatically across all devices.
+                </p>
               </div>
-              {isCustomPasscode && (
+            </div>
+
+            {/* Unboxed Status Metadata */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-neutral-600">
+              <span className="font-semibold text-black">
+                {passcodeStatus.source === 'firebase'
+                  ? 'Synced via Firebase'
+                  : 'Built-In Event Default'}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                {passcodeStatus.source === 'firebase'
+                  ? passcodeStatus.usesHashedStorage
+                    ? 'SHA-256 hash active'
+                    : 'Owner record active'
+                  : 'No Firebase override set yet'}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="tabular-nums">
+                Checked {formatSyncTime(passcodeStatus.lastSyncedAt)}
+              </span>
+            </div>
+
+            {/* Owner Management Reference */}
+            <div className="rounded-xl bg-white border border-neutral-200 px-3 py-2.5 text-[11px] text-neutral-600 leading-relaxed">
+              <div className="font-semibold text-neutral-900">Owner Rotation Path</div>
+              <div className="mt-0.5 break-all font-mono text-[11px] text-neutral-700">
+                Firestore: {OWNER_SECURITY_DOC_PATH} (passcodeHash or passcode)
+              </div>
+            </div>
+
+            {passcodeStatus.syncError && (
+              <div
+                role="status"
+                className="flex items-start gap-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-900"
+              >
+                <AlertCircle className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
+                <span>{passcodeStatus.syncError}</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
+              <div className="text-[11px] font-semibold text-emerald-700 min-h-[16px]">
+                {syncVerifiedNotice && 'Firebase passcode sync verified.'}
+              </div>
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleResetPasscode}
-                  className="text-[11px] font-semibold text-neutral-600 hover:text-black underline"
+                  onClick={handleRefreshPasscodeSync}
+                  disabled={refreshingPasscodeSync}
+                  className="min-h-[40px] px-3.5 py-2 rounded-full border border-neutral-300 bg-white hover:bg-neutral-100 text-neutral-800 text-xs font-bold flex items-center gap-1.5 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
                 >
-                  Reset to Default
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 shrink-0 ${refreshingPasscodeSync ? 'animate-spin' : ''}`}
+                  />
+                  <span>{refreshingPasscodeSync ? 'Checking...' : 'Refresh Sync'}</span>
                 </button>
-              )}
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <input
-                type="password"
-                value={newPasscode}
-                onChange={(e) => setNewPasscode(e.target.value)}
-                placeholder="New passcode (min 4 chars)"
-                className="min-h-[40px] text-xs px-3 py-2 rounded-xl border border-neutral-300 bg-white text-black focus:outline-none focus:ring-2 focus:ring-black"
-              />
-              <input
-                type="password"
-                value={confirmPasscode}
-                onChange={(e) => setConfirmPasscode(e.target.value)}
-                placeholder="Confirm new passcode"
-                className="min-h-[40px] text-xs px-3 py-2 rounded-xl border border-neutral-300 bg-white text-black focus:outline-none focus:ring-2 focus:ring-black"
-              />
-            </div>
-
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="text-[11px]">
-                {passcodeMessage && (
-                  <span
-                    className={
-                      passcodeMessage.type === 'error'
-                        ? 'text-red-600 font-semibold'
-                        : 'text-emerald-700 font-semibold'
-                    }
-                  >
-                    {passcodeMessage.text}
-                  </span>
-                )}
+                <button
+                  type="button"
+                  onClick={() => setShowPasscodePanel(false)}
+                  className="min-h-[40px] px-3.5 py-2 rounded-full bg-neutral-900 hover:bg-black text-white text-xs font-bold transition-colors whitespace-nowrap shrink-0"
+                >
+                  Close
+                </button>
               </div>
-              <button
-                type="submit"
-                className="min-h-[38px] px-4 py-1.5 rounded-full text-xs font-bold text-white whitespace-nowrap"
-                style={{ backgroundColor: config.colors.primaryAccent }}
-              >
-                Save Passcode
-              </button>
             </div>
-          </form>
+          </div>
         )}
 
         {/* Tab Selection Bar */}
-        <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-2xl mt-3 text-xs">
-          <button
-            onClick={() => setActiveTab('questions')}
-            className={`flex-1 py-2 px-3 rounded-xl font-bold flex items-center justify-center gap-1.5 transition-all ${
-              activeTab === 'questions'
-                ? 'bg-white text-black shadow-xs'
-                : 'text-neutral-500 hover:text-black'
-            }`}
-          >
-            <MessageSquare className="w-3.5 h-3.5 text-[#E5007D]" />
-            <span>Stage Q&amp;A Queue</span>
-            <span className="text-[10px] bg-neutral-200 text-neutral-700 px-1.5 py-0.2 rounded-full">
-              {questions.length}
-            </span>
-          </button>
-
+        <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-2xl mt-3 text-xs overflow-x-auto">
           <button
             onClick={() => setActiveTab('feedback')}
-            className={`flex-1 py-2 px-3 rounded-xl font-bold flex items-center justify-center gap-1.5 transition-all ${
+            className={`flex-1 py-2 px-2.5 sm:px-3 rounded-xl font-bold flex items-center justify-center gap-1.5 transition-all whitespace-nowrap ${
               activeTab === 'feedback'
                 ? 'bg-white text-black shadow-xs'
                 : 'text-neutral-500 hover:text-black'
             }`}
           >
-            <BarChart3 className="w-3.5 h-3.5 text-[#E5007D]" />
-            <span>Feedback &amp; CSV</span>
-            <span className="text-[10px] bg-neutral-200 text-neutral-700 px-1.5 py-0.2 rounded-full">
+            <BarChart3 className="w-3.5 h-3.5 text-[#E5007D] shrink-0" />
+            <span>
+              Feedback<span className="hidden sm:inline"> &amp; CSV</span>
+            </span>
+            <span className="text-[10px] bg-neutral-200 text-neutral-700 px-1.5 py-0.2 rounded-full tabular-nums">
               {feedbackList.length}
             </span>
           </button>
 
           <button
             onClick={() => setActiveTab('polls')}
-            className={`flex-1 py-2 px-3 rounded-xl font-bold flex items-center justify-center gap-1.5 transition-all ${
+            className={`flex-1 py-2 px-2.5 sm:px-3 rounded-xl font-bold flex items-center justify-center gap-1.5 transition-all whitespace-nowrap ${
               activeTab === 'polls'
                 ? 'bg-white text-black shadow-xs'
                 : 'text-neutral-500 hover:text-black'
             }`}
           >
-            <TrendingUp className="w-3.5 h-3.5 text-[#E5007D]" />
+            <TrendingUp className="w-3.5 h-3.5 text-[#E5007D] shrink-0" />
             <span>Live Polls</span>
-            <span className="text-[10px] bg-neutral-200 text-neutral-700 px-1.5 py-0.2 rounded-full">
+            <span className="text-[10px] bg-neutral-200 text-neutral-700 px-1.5 py-0.2 rounded-full tabular-nums">
               {polls.length}
             </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('tables')}
+            className={`flex-1 py-2 px-2.5 sm:px-3 rounded-xl font-bold flex items-center justify-center gap-1.5 transition-all whitespace-nowrap ${
+              activeTab === 'tables'
+                ? 'bg-white text-black shadow-xs'
+                : 'text-neutral-500 hover:text-black'
+            }`}
+          >
+            <Armchair className="w-3.5 h-3.5 text-[#E5007D] shrink-0" />
+            <span>Table Plan</span>
+            {tablePlan.delegateCount > 0 && (
+              <span className="text-[10px] bg-neutral-200 text-neutral-700 px-1.5 py-0.2 rounded-full tabular-nums">
+                {tablePlan.delegateCount}
+              </span>
+            )}
           </button>
         </div>
 
@@ -972,171 +964,512 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
           </div>
         )}
 
-        {/* TAB 2: LIVE QUESTIONS QUEUE (Real-Time Firestore speaker_questions) */}
-        {activeTab === 'questions' && (
+        {/* TAB 2: LIVE POLLS MANAGER (Real-Time Firestore polls) */}
+        {activeTab === 'polls' && (
           <div className="flex-1 overflow-y-auto py-3 space-y-4 pr-1">
-            <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
               <div>
                 <span className="text-xs font-bold uppercase tracking-wider text-black">
-                  Live Incoming Questions Queue ({questions.length})
+                  Audience Polls ({polls.length})
                 </span>
                 <div className="text-[11px] text-neutral-500">
-                  Real-time Firestore sync · Private from regular delegates
+                  {polls.filter((p) => p.isActive !== false).length} Live ·{' '}
+                  {polls.filter((p) => p.isActive === false).length} Draft · Real-Time Cloud Sync
                 </div>
               </div>
 
-              {/* Status Filter Tabs */}
-              <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-xl text-[11px]">
-                {[
-                  { id: 'all' as const, label: `All (${questions.length})` },
-                  { id: 'pending' as const, label: `Pending (${pendingCount})` },
-                  { id: 'approved' as const, label: `Approved (${approvedCount})` },
-                  { id: 'answered' as const, label: `Answered (${answeredCount})` },
-                ].map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    onClick={() => setQuestionStatusFilter(f.id)}
-                    className={`px-2.5 py-1 rounded-lg font-bold transition-colors whitespace-nowrap ${
-                      questionStatusFilter === f.id
-                        ? 'bg-white text-black shadow-xs'
-                        : 'text-neutral-500 hover:text-black'
-                    }`}
-                  >
-                    {f.label}
-                  </button>
-                ))}
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingPollId(null);
+                  setConfirmDeletePollId(null);
+                  setPollFormError(null);
+                  setShowNewPollForm((prev) => !prev);
+                }}
+                className={`min-h-[38px] text-xs font-bold py-1.5 px-3.5 rounded-full flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 tap-highlight ${
+                  showNewPollForm
+                    ? 'bg-neutral-200 text-black hover:bg-neutral-300'
+                    : 'bg-[#E5007D] text-white hover:bg-[#c4006b] shadow-sm'
+                }`}
+              >
+                {showNewPollForm ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                <span>{showNewPollForm ? 'Close Form' : 'New Poll'}</span>
+              </button>
             </div>
 
-            {questionsError && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 text-xs text-red-800">
-                <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                <span>{questionsError}</span>
-              </div>
-            )}
+            {/* Inline New Poll Composer (Saved as Hidden Draft) */}
+            {showNewPollForm && (
+              <form
+                onSubmit={(e) => void handleCreatePoll(e)}
+                className="border-2 border-black rounded-2xl p-4 bg-neutral-50 space-y-3"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-xs font-black uppercase tracking-wider text-black">
+                      Create New Poll Question
+                    </h4>
+                    <p className="text-[11px] text-neutral-500">
+                      Saved as a hidden draft until you tap Go Live.
+                    </p>
+                  </div>
+                </div>
 
-            {questionsLoading ? (
-              <div className="p-8 text-center text-xs text-neutral-500 flex items-center justify-center gap-2 border border-dashed border-neutral-200 rounded-2xl">
-                <Loader2 className="w-4 h-4 animate-spin text-[#E5007D]" />
-                <span>Listening for incoming speaker questions...</span>
-              </div>
-            ) : filteredQuestions.length === 0 ? (
-              <div className="p-8 text-center text-xs text-neutral-500 border border-dashed border-neutral-200 rounded-2xl space-y-1">
-                <div className="font-bold text-black">No questions in this view yet</div>
-                <p className="text-[11px]">
-                  Questions submitted by delegates in Interactions → Ask Speaker appear here automatically in real time.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {filteredQuestions.map((q) => {
-                  const isPinned = pinnedQuestionId === q.id;
-                  const isApproved = q.status === 'approved';
-                  const isAnswered = q.status === 'answered';
+                {/* Session Picker */}
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-neutral-700 block">
+                    Session / Topic
+                  </label>
+                  <select
+                    value={newPollSession}
+                    onChange={(e) => setNewPollSession(e.target.value)}
+                    className="w-full min-h-[40px] text-xs px-3 py-2 rounded-xl border border-neutral-300 bg-white text-black focus:outline-none focus:border-black font-medium"
+                  >
+                    {sessionOptions.map((label) => (
+                      <option key={label} value={label}>
+                        {label}
+                      </option>
+                    ))}
+                    <option value="__custom__">Custom Session Title...</option>
+                  </select>
 
-                  return (
-                    <div
-                      key={q.id}
-                      className={`border rounded-2xl p-4 transition-all space-y-2.5 ${
-                        isAnswered
-                          ? 'border-neutral-200 bg-neutral-50 opacity-70'
-                          : isPinned
-                          ? 'border-black bg-neutral-50 ring-2 ring-black'
-                          : isApproved
-                          ? 'border-emerald-300 bg-white'
-                          : 'border-neutral-200 bg-white hover:border-black'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="flex items-center gap-1.5 text-xs text-neutral-500 flex-wrap">
-                            <span className="font-bold text-black">{q.delegateName}</span>
-                            <span>·</span>
-                            <span>{q.createdAtLabel}</span>
-                          </div>
-                          <div className="text-xs font-bold text-[#E5007D] mt-0.5">
-                            Session / Speaker: {q.sessionName}
-                          </div>
-                        </div>
+                  {newPollSession === '__custom__' && (
+                    <input
+                      type="text"
+                      value={newPollCustomSession}
+                      onChange={(e) => setNewPollCustomSession(e.target.value)}
+                      maxLength={120}
+                      placeholder="e.g. Afternoon Trading Panel"
+                      className="w-full min-h-[40px] text-xs px-3 py-2 rounded-xl border border-neutral-300 bg-white text-black placeholder:text-neutral-400 focus:outline-none focus:border-black"
+                    />
+                  )}
+                </div>
 
-                        <span
-                          className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full whitespace-nowrap shrink-0 ${
-                            isAnswered
-                              ? 'bg-neutral-200 text-neutral-700'
-                              : isApproved
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-800'
-                          }`}
-                        >
-                          {q.status}
+                {/* Poll Question */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-neutral-700 block">
+                    Poll Question
+                  </label>
+                  <input
+                    type="text"
+                    value={newPollQuestion}
+                    onChange={(e) => setNewPollQuestion(e.target.value)}
+                    maxLength={220}
+                    placeholder="e.g. Which retail growth lever matters most for Q1 2027?"
+                    className="w-full min-h-[42px] text-xs px-3 py-2 rounded-xl border border-neutral-300 bg-white text-black placeholder:text-neutral-400 focus:outline-none focus:border-black font-medium"
+                  />
+                </div>
+
+                {/* Answer Options (2 to 6) */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-neutral-700">
+                      Answer Options ({newPollOptions.length}/6)
+                    </label>
+                    {newPollOptions.length < 6 && (
+                      <button
+                        type="button"
+                        onClick={() => setNewPollOptions((prev) => [...prev, ''])}
+                        className="text-[11px] font-bold text-[#E5007D] hover:underline flex items-center gap-0.5"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Add Option</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    {newPollOptions.map((optText, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <span className="text-[11px] font-mono font-bold text-neutral-400 w-4 shrink-0">
+                          {idx + 1}.
                         </span>
-                      </div>
-
-                      <p className="text-xs font-medium text-black leading-relaxed">
-                        {q.questionText}
-                      </p>
-
-                      {/* Moderator Firestore Controls */}
-                      <div className="flex items-center justify-between pt-2 border-t border-neutral-100 text-xs gap-2 flex-wrap">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPinnedQuestionId(q.id);
-                              if (q.status === 'pending') {
-                                void handleSetQuestionStatus(q.id, 'approved');
-                              }
-                            }}
-                            className={`text-xs font-bold px-3 py-1.5 rounded-full transition-colors flex items-center gap-1 whitespace-nowrap ${
-                              isPinned
-                                ? 'bg-[#E5007D] text-white'
-                                : 'bg-neutral-100 text-neutral-700 hover:bg-black hover:text-white'
-                            }`}
-                          >
-                            <Pin className="w-3 h-3 shrink-0" />
-                            <span>{isPinned ? 'On Stage Screen' : 'Push to Stage'}</span>
-                          </button>
-
-                          {!isApproved && !isAnswered && (
-                            <button
-                              type="button"
-                              onClick={() => void handleSetQuestionStatus(q.id, 'approved')}
-                              className="text-xs font-bold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 transition-colors flex items-center gap-1 whitespace-nowrap"
-                            >
-                              <ThumbsUp className="w-3 h-3 shrink-0" />
-                              <span>Approve</span>
-                            </button>
-                          )}
-
+                        <input
+                          type="text"
+                          value={optText}
+                          onChange={(e) =>
+                            setNewPollOptions((prev) =>
+                              prev.map((val, i) => (i === idx ? e.target.value : val))
+                            )
+                          }
+                          maxLength={120}
+                          placeholder={`Option ${idx + 1}`}
+                          className="flex-1 min-h-[40px] text-xs px-3 py-2 rounded-xl border border-neutral-300 bg-white text-black placeholder:text-neutral-400 focus:outline-none focus:border-black"
+                        />
+                        {newPollOptions.length > 2 && (
                           <button
                             type="button"
                             onClick={() =>
-                              void handleSetQuestionStatus(
-                                q.id,
-                                isAnswered ? 'approved' : 'answered'
-                              )
+                              setNewPollOptions((prev) => prev.filter((_, i) => i !== idx))
                             }
-                            className={`text-xs font-medium px-3 py-1.5 rounded-full transition-colors flex items-center gap-1 whitespace-nowrap ${
-                              isAnswered
-                                ? 'text-neutral-600 bg-white border border-neutral-200 hover:text-black'
-                                : 'text-neutral-700 hover:text-black border border-neutral-200 bg-white'
-                            }`}
+                            className="p-2 text-neutral-400 hover:text-red-600 transition-colors"
+                            aria-label={`Remove option ${idx + 1}`}
                           >
-                            <CheckCircle className="w-3 h-3 text-[#E5007D] shrink-0" />
-                            <span>{isAnswered ? 'Reopen' : 'Mark Answered'}</span>
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {pollFormError && (
+                  <div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                    <span>{pollFormError}</span>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPollForm(false)}
+                    className="min-h-[40px] px-4 py-2 rounded-full text-xs font-semibold text-neutral-600 hover:text-black border border-neutral-300 bg-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={creatingPoll}
+                    className="min-h-[40px] px-5 py-2 rounded-full text-xs font-bold bg-black text-white hover:bg-neutral-800 disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    {creatingPoll ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-[#E5007D]" />
+                        <span>Save as Draft</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Polls List */}
+            {polls.length === 0 ? (
+              <div className="p-8 text-center text-xs text-neutral-500 border border-dashed border-neutral-200 rounded-2xl space-y-2">
+                <div className="font-bold text-black">No polls created yet</div>
+                <p className="text-[11px]">
+                  Tap <strong>New Poll</strong> above to draft a poll question and push it live to delegate phones when ready.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {polls.map((poll) => {
+                  const totalVotes = poll.totalVotes || 0;
+                  const isActive = poll.isActive !== false;
+                  const isEditingThis = editingPollId === poll.id;
+                  const isConfirmingDelete = confirmDeletePollId === poll.id;
+
+                  if (isEditingThis) {
+                    return (
+                      <form
+                        key={poll.id}
+                        onSubmit={(e) => void handleSaveEditPoll(e, poll)}
+                        className="border-2 border-black rounded-2xl p-4 bg-neutral-50 space-y-3"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-black uppercase tracking-wider text-black">
+                            Edit Poll
+                          </span>
+                          <span className="text-[11px] text-neutral-500">
+                            Existing votes on kept options are preserved
+                          </span>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-neutral-700 block">
+                            Session / Topic
+                          </label>
+                          <input
+                            type="text"
+                            value={editSessionTitle}
+                            onChange={(e) => setEditSessionTitle(e.target.value)}
+                            maxLength={120}
+                            className="w-full min-h-[40px] text-xs px-3 py-2 rounded-xl border border-neutral-300 bg-white text-black focus:outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-neutral-700 block">
+                            Poll Question
+                          </label>
+                          <input
+                            type="text"
+                            value={editQuestion}
+                            onChange={(e) => setEditQuestion(e.target.value)}
+                            maxLength={220}
+                            className="w-full min-h-[42px] text-xs px-3 py-2 rounded-xl border border-neutral-300 bg-white text-black focus:outline-none focus:border-black font-medium"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[11px] font-bold text-neutral-700">
+                              Answer Options ({editOptions.length}/6)
+                            </label>
+                            {editOptions.length < 6 && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditOptions((prev) => [...prev, { text: '', votes: 0 }])
+                                }
+                                className="text-[11px] font-bold text-[#E5007D] hover:underline flex items-center gap-0.5"
+                              >
+                                <Plus className="w-3 h-3" />
+                                <span>Add Option</span>
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="space-y-2">
+                            {editOptions.map((opt, idx) => (
+                              <div key={opt.id || `new_${idx}`} className="flex items-center gap-2">
+                                <span className="text-[11px] font-mono font-bold text-neutral-400 w-4 shrink-0">
+                                  {idx + 1}.
+                                </span>
+                                <input
+                                  type="text"
+                                  value={opt.text}
+                                  onChange={(e) =>
+                                    setEditOptions((prev) =>
+                                      prev.map((item, i) =>
+                                        i === idx ? { ...item, text: e.target.value } : item
+                                      )
+                                    )
+                                  }
+                                  maxLength={120}
+                                  placeholder={`Option ${idx + 1}`}
+                                  className="flex-1 min-h-[40px] text-xs px-3 py-2 rounded-xl border border-neutral-300 bg-white text-black focus:outline-none focus:border-black"
+                                />
+                                {typeof opt.votes === 'number' && opt.votes > 0 && (
+                                  <span className="text-[10px] font-mono text-neutral-500 tabular-nums whitespace-nowrap shrink-0">
+                                    {opt.votes}v
+                                  </span>
+                                )}
+                                {editOptions.length > 2 && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setEditOptions((prev) => prev.filter((_, i) => i !== idx))
+                                    }
+                                    className="p-2 text-neutral-400 hover:text-red-600 transition-colors"
+                                    aria-label={`Remove option ${idx + 1}`}
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {editFormError && (
+                          <div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 flex items-center gap-2">
+                            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                            <span>{editFormError}</span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-end gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setEditingPollId(null)}
+                            className="min-h-[40px] px-4 py-2 rounded-full text-xs font-semibold text-neutral-600 hover:text-black border border-neutral-300 bg-white"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={savingEditPoll}
+                            className="min-h-[40px] px-5 py-2 rounded-full text-xs font-bold bg-black text-white hover:bg-neutral-800 disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
+                          >
+                            {savingEditPoll ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Saving...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-[#E5007D]" />
+                                <span>Save Changes</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </form>
+                    );
+                  }
+
+                  return (
+                    <div
+                      key={poll.id}
+                      className={`border rounded-2xl p-4 space-y-3 transition-colors ${
+                        isActive
+                          ? 'border-neutral-200 bg-white'
+                          : 'border-dashed border-neutral-300 bg-neutral-50/70'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider flex-wrap">
+                            <span className="text-[#E5007D]">{poll.sessionTitle}</span>
+                            <span className="text-neutral-300">·</span>
+                            <span
+                              className={
+                                isActive ? 'text-emerald-700' : 'text-amber-700'
+                              }
+                            >
+                              {isActive ? 'Live to Delegates' : 'Draft · Hidden'}
+                            </span>
+                          </div>
+                          <h4 className="text-sm font-bold text-black mt-0.5">
+                            {poll.question}
+                          </h4>
+                        </div>
+
+                        <span className="text-xs font-mono font-bold text-neutral-600 tabular-nums whitespace-nowrap shrink-0">
+                          {totalVotes} {totalVotes === 1 ? 'vote' : 'votes'}
+                        </span>
+                      </div>
+
+                      <div className="space-y-2 pt-1">
+                        {poll.options.map((opt) => {
+                          const pct = totalVotes > 0 ? Math.round((opt.votes / totalVotes) * 100) : 0;
+                          return (
+                            <div key={opt.id} className="space-y-1">
+                              <div className="flex items-center justify-between text-xs gap-2">
+                                <span className="text-neutral-700 font-medium">{opt.text}</span>
+                                <span className="font-mono font-bold text-black tabular-nums whitespace-nowrap shrink-0">
+                                  {opt.votes} ({pct}%)
+                                </span>
+                              </div>
+                              <div className="h-2 w-full bg-neutral-100 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-[#E5007D] rounded-full transition-all duration-300"
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Poll Action Controls */}
+                      <div className="pt-2.5 border-t border-neutral-100 flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {/* Go Live / Pause Toggle */}
+                          <button
+                            type="button"
+                            disabled={togglingActivePollId === poll.id}
+                            onClick={() => void handleToggleActivePoll(poll)}
+                            className={`text-[11px] font-bold px-3 py-1.5 rounded-full flex items-center gap-1 transition-colors whitespace-nowrap ${
+                              isActive
+                                ? 'bg-neutral-100 text-neutral-800 hover:bg-neutral-200'
+                                : 'bg-[#E5007D] text-white hover:bg-[#c4006b] shadow-xs'
+                            }`}
+                            title={
+                              isActive
+                                ? 'Pause poll and move back to hidden draft'
+                                : 'Publish poll live to all delegate screens'
+                            }
+                          >
+                            {togglingActivePollId === poll.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : isActive ? (
+                              <Pause className="w-3 h-3 shrink-0" />
+                            ) : (
+                              <Radio className="w-3 h-3 shrink-0" />
+                            )}
+                            <span>{isActive ? 'Pause to Draft' : 'Go Live'}</span>
+                          </button>
+
+                          {/* Reveal / Hide Pie Chart Results */}
+                          <button
+                            type="button"
+                            disabled={togglingRevealPollId === poll.id}
+                            onClick={() => void handleToggleRevealPoll(poll)}
+                            className={`text-[11px] font-bold px-3 py-1.5 rounded-full flex items-center gap-1 transition-colors whitespace-nowrap ${
+                              poll.resultsRevealed
+                                ? 'bg-black text-white hover:bg-neutral-800'
+                                : 'text-neutral-700 hover:text-black border border-neutral-300 hover:border-black bg-white'
+                            }`}
+                            title={
+                              poll.resultsRevealed
+                                ? 'Hide chart & percentages from delegates who have not voted yet'
+                                : 'Reveal pie chart & results to all delegate screens now'
+                            }
+                          >
+                            {poll.resultsRevealed ? (
+                              <>
+                                <EyeOff className="w-3 h-3 shrink-0 text-[#E5007D]" />
+                                <span>Hide Results</span>
+                              </>
+                            ) : (
+                              <>
+                                <Eye className="w-3 h-3 shrink-0 text-[#E5007D]" />
+                                <span>Reveal Results</span>
+                              </>
+                            )}
+                          </button>
+
+                          {/* Edit Poll */}
+                          <button
+                            type="button"
+                            onClick={() => startEditingPoll(poll)}
+                            className="text-[11px] font-semibold text-neutral-700 hover:text-black border border-neutral-200 hover:border-neutral-400 bg-white px-2.5 py-1.5 rounded-full flex items-center gap-1 transition-colors whitespace-nowrap"
+                            title="Edit poll question or options"
+                          >
+                            <Pencil className="w-3 h-3 shrink-0" />
+                            <span>Edit</span>
+                          </button>
+
+                          {/* Reset Votes */}
+                          <button
+                            type="button"
+                            disabled={resettingPollId === poll.id}
+                            onClick={() => void handleResetPoll(poll)}
+                            className="text-[11px] font-semibold text-neutral-500 hover:text-black border border-neutral-200 hover:border-neutral-400 bg-white px-2.5 py-1.5 rounded-full flex items-center gap-1 transition-colors whitespace-nowrap"
+                            title="Reset poll votes to zero in Firestore"
+                          >
+                            <RotateCcw className={`w-3 h-3 ${resettingPollId === poll.id ? 'animate-spin' : ''}`} />
+                            <span>Reset</span>
                           </button>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => void handleDeleteQuestion(q.id)}
-                          className="text-neutral-400 hover:text-red-600 p-1.5 transition-colors"
-                          title="Delete question from Firestore"
-                          aria-label="Delete question"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {/* Inline Two-Step Delete */}
+                        {isConfirmingDelete ? (
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={deletingPollId === poll.id}
+                              onClick={() => void handleConfirmDeletePoll(poll.id)}
+                              className="text-[11px] font-bold bg-red-600 hover:bg-red-700 text-white px-2.5 py-1 rounded-full whitespace-nowrap"
+                            >
+                              {deletingPollId === poll.id ? 'Deleting...' : 'Confirm Delete'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeletePollId(null)}
+                              className="text-[11px] font-semibold text-neutral-600 hover:text-black px-2 py-1"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeletePollId(poll.id)}
+                            className="p-1.5 text-neutral-400 hover:text-red-600 transition-colors"
+                            title="Delete poll"
+                            aria-label="Delete poll"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -1146,76 +1479,12 @@ export const ModeratorModal: React.FC<ModeratorModalProps> = ({
           </div>
         )}
 
-        {/* TAB 3: LIVE POLLS STATUS (Real-Time Firestore polls) */}
-        {activeTab === 'polls' && (
-          <div className="flex-1 overflow-y-auto py-3 space-y-4 pr-1">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-black">
-                Active Audience Polls ({polls.length})
-              </span>
-              <span className="text-[11px] text-neutral-500">Real-Time Firestore Tallies</span>
-            </div>
-
-            <div className="space-y-4">
-              {polls.map((poll) => {
-                const totalVotes = poll.totalVotes || 0;
-                return (
-                  <div
-                    key={poll.id}
-                    className="border border-neutral-200 rounded-2xl p-4 bg-white space-y-3"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <span className="text-[10px] font-bold text-[#E5007D] uppercase tracking-wider">
-                          {poll.sessionTitle}
-                        </span>
-                        <h4 className="text-sm font-bold text-black mt-0.5">
-                          {poll.question}
-                        </h4>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <span className="text-xs font-mono font-bold bg-neutral-100 text-black px-2.5 py-1 rounded-full tabular-nums">
-                          {totalVotes} {totalVotes === 1 ? 'vote' : 'votes'}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={resettingPollId === poll.id}
-                          onClick={() => void handleResetPoll(poll)}
-                          className="text-[11px] font-semibold text-neutral-500 hover:text-black border border-neutral-200 hover:border-neutral-400 px-2.5 py-1 rounded-full flex items-center gap-1 transition-colors whitespace-nowrap"
-                          title="Reset poll votes to zero in Firestore"
-                        >
-                          <RotateCcw className={`w-3 h-3 ${resettingPollId === poll.id ? 'animate-spin' : ''}`} />
-                          <span>Reset</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2 pt-1">
-                      {poll.options.map((opt) => {
-                        const pct = totalVotes > 0 ? Math.round((opt.votes / totalVotes) * 100) : 0;
-                        return (
-                          <div key={opt.id} className="space-y-1">
-                            <div className="flex items-center justify-between text-xs gap-2">
-                              <span className="text-neutral-700 font-medium">{opt.text}</span>
-                              <span className="font-mono font-bold text-black tabular-nums whitespace-nowrap shrink-0">
-                                {opt.votes} ({pct}%)
-                              </span>
-                            </div>
-                            <div className="h-2 w-full bg-neutral-100 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-[#E5007D] rounded-full transition-all duration-300"
-                                style={{ width: `${pct}%` }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+        {/* TAB 3: TABLE PLAN UPLOAD & MANAGEMENT */}
+        {activeTab === 'tables' && (
+          <OrganizerTablePlanTab
+            tablePlan={tablePlan}
+            accentColor={config.colors.primaryAccent}
+          />
         )}
 
         {/* Modal Footer */}

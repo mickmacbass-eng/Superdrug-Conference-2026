@@ -3,6 +3,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   onSnapshot,
   orderBy,
   query,
@@ -22,24 +23,10 @@ import {
 import { INITIAL_POLLS, Poll, PollOption } from '../data/conferenceData';
 import { FeedbackSubmission } from '../data/feedbackData';
 
-export type SpeakerQuestionStatus = 'pending' | 'approved' | 'answered';
-
-export interface SpeakerQuestion {
-  id: string;
-  questionText: string;
-  delegateName: string;
-  sessionName: string;
-  status: SpeakerQuestionStatus;
-  createdAtMs: number;
-  createdAtLabel: string;
-}
-
 const VOTED_POLLS_STORAGE_KEY = 'sd_firestore_voted_polls_v1';
-const LOCAL_QUESTIONS_KEY = 'sd_fallback_speaker_questions_v1';
 const LOCAL_POLLS_KEY = 'sd_fallback_polls_v1';
 const LOCAL_FEEDBACK_KEY = 'sd_fallback_event_feedback_v1';
 
-const LOCAL_QUESTIONS_EVENT = 'sd:local-questions-updated';
 const LOCAL_POLLS_EVENT = 'sd:local-polls-updated';
 const LOCAL_FEEDBACK_EVENT = 'sd:local-feedback-updated';
 
@@ -87,30 +74,30 @@ function dispatchLocalEvent(eventName: string) {
 // LOCAL FALLBACK HELPERS (ensures UI never hangs if Firestore is unreachable)
 // ============================================================================
 
-function readLocalQuestions(): SpeakerQuestion[] {
+const POLLS_INITIALIZED_KEY = 'sd_polls_initialized_v1';
+
+function markPollsInitialized() {
   try {
-    const raw = localStorage.getItem(LOCAL_QUESTIONS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as SpeakerQuestion[]) : [];
+    localStorage.setItem(POLLS_INITIALIZED_KEY, 'true');
   } catch {
-    return [];
+    // ignore
   }
 }
 
-function writeLocalQuestions(items: SpeakerQuestion[]) {
+function werePollsInitialized(): boolean {
   try {
-    localStorage.setItem(LOCAL_QUESTIONS_KEY, JSON.stringify(items));
+    return localStorage.getItem(POLLS_INITIALIZED_KEY) === 'true';
   } catch {
-    // ignore storage errors
+    return false;
   }
-  dispatchLocalEvent(LOCAL_QUESTIONS_EVENT);
 }
 
 function defaultZeroPolls(): Poll[] {
   return INITIAL_POLLS.map((p) => ({
     ...p,
     totalVotes: 0,
+    isActive: true,
+    resultsRevealed: false,
     options: p.options.map((o) => ({ ...o, votes: 0 })),
   }));
 }
@@ -118,11 +105,14 @@ function defaultZeroPolls(): Poll[] {
 function readLocalPolls(): Poll[] {
   try {
     const raw = localStorage.getItem(LOCAL_POLLS_KEY);
-    if (!raw) return defaultZeroPolls();
+    if (raw === null) return werePollsInitialized() ? [] : defaultZeroPolls();
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? (parsed as Poll[]) : defaultZeroPolls();
+    if (Array.isArray(parsed)) {
+      return parsed as Poll[];
+    }
+    return werePollsInitialized() ? [] : defaultZeroPolls();
   } catch {
-    return defaultZeroPolls();
+    return werePollsInitialized() ? [] : defaultZeroPolls();
   }
 }
 
@@ -156,213 +146,7 @@ function writeLocalFeedback(items: FeedbackSubmission[]) {
 }
 
 // ============================================================================
-// 1. PRIVATE SPEAKER Q&A (speaker_questions collection)
-// ============================================================================
-
-export async function submitSpeakerQuestion(input: {
-  questionText: string;
-  delegateName: string;
-  sessionName: string;
-}): Promise<string> {
-  const questionText = input.questionText.trim().slice(0, 280);
-  const delegateName = input.delegateName.trim().slice(0, 80) || 'Anonymous';
-  const sessionName = input.sessionName.trim().slice(0, 140) || 'Executive Keynote Panel';
-
-  if (!questionText) {
-    throw new Error('Please enter a question before submitting.');
-  }
-
-  const nowMs = Date.now();
-  const saveLocally = (): string => {
-    const localId = `local_q_${nowMs}_${Math.random().toString(36).slice(2, 7)}`;
-    const nextItem: SpeakerQuestion = {
-      id: localId,
-      questionText,
-      delegateName,
-      sessionName,
-      status: 'pending',
-      createdAtMs: nowMs,
-      createdAtLabel: formatTimeLabel(nowMs),
-    };
-    writeLocalQuestions([nextItem, ...readLocalQuestions()]);
-    return localId;
-  };
-
-  if (!db) {
-    return saveLocally();
-  }
-
-  try {
-    const docRef = await withTimeout(
-      addDoc(collection(db, 'speaker_questions'), {
-        questionText,
-        delegateName,
-        sessionName,
-        status: 'pending' as SpeakerQuestionStatus,
-        createdAt: serverTimestamp(),
-      }),
-      WRITE_TIMEOUT_MS,
-      'Submit speaker question'
-    );
-    return docRef.id;
-  } catch (error) {
-    formatFirestoreError(error, OperationType.CREATE, 'speaker_questions');
-    return saveLocally();
-  }
-}
-
-export function subscribeSpeakerQuestions(
-  onData: (questions: SpeakerQuestion[]) => void,
-  onError?: (message: string) => void
-): Unsubscribe {
-  let remoteQuestions: SpeakerQuestion[] = [];
-  let hasRemoteSnapshot = false;
-
-  const emitMerged = () => {
-    const localItems = readLocalQuestions();
-    const seenIds = new Set(remoteQuestions.map((q) => q.id));
-    const merged = [
-      ...remoteQuestions,
-      ...localItems.filter((item) => !seenIds.has(item.id)),
-    ].sort((a, b) => b.createdAtMs - a.createdAtMs);
-    onData(merged);
-  };
-
-  const handleLocalChange = () => emitMerged();
-  if (typeof window !== 'undefined') {
-    window.addEventListener(LOCAL_QUESTIONS_EVENT, handleLocalChange);
-  }
-
-  if (!db) {
-    emitMerged();
-    return () => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener(LOCAL_QUESTIONS_EVENT, handleLocalChange);
-      }
-    };
-  }
-
-  // Ensure Moderator UI never stays stuck on a loading spinner if Firestore is slow/offline
-  const fallbackTimer = window.setTimeout(() => {
-    if (!hasRemoteSnapshot) {
-      emitMerged();
-    }
-  }, INITIAL_SNAPSHOT_FALLBACK_MS);
-
-  let unsubFirestore: Unsubscribe = () => {};
-  try {
-    const q = query(collection(db, 'speaker_questions'), orderBy('createdAt', 'desc'));
-    unsubFirestore = onSnapshot(
-      q,
-      (snapshot) => {
-        hasRemoteSnapshot = true;
-        window.clearTimeout(fallbackTimer);
-        remoteQuestions = snapshot.docs.map((snap) => {
-          const data = snap.data();
-          const createdAtMs = timestampToMs(data.createdAt);
-          const rawStatus = data.status;
-          const status: SpeakerQuestionStatus =
-            rawStatus === 'approved' || rawStatus === 'answered' ? rawStatus : 'pending';
-
-          return {
-            id: snap.id,
-            questionText: typeof data.questionText === 'string' ? data.questionText : '',
-            delegateName:
-              typeof data.delegateName === 'string' && data.delegateName.trim()
-                ? data.delegateName
-                : 'Anonymous',
-            sessionName:
-              typeof data.sessionName === 'string' && data.sessionName.trim()
-                ? data.sessionName
-                : 'General Session',
-            status,
-            createdAtMs,
-            createdAtLabel: formatTimeLabel(createdAtMs),
-          };
-        });
-        emitMerged();
-      },
-      (error) => {
-        hasRemoteSnapshot = true;
-        window.clearTimeout(fallbackTimer);
-        formatFirestoreError(error, OperationType.LIST, 'speaker_questions');
-        emitMerged();
-        onError?.('Live cloud sync paused — showing local queue.');
-      }
-    );
-  } catch (error) {
-    window.clearTimeout(fallbackTimer);
-    formatFirestoreError(error, OperationType.LIST, 'speaker_questions');
-    emitMerged();
-  }
-
-  return () => {
-    window.clearTimeout(fallbackTimer);
-    unsubFirestore();
-    if (typeof window !== 'undefined') {
-      window.removeEventListener(LOCAL_QUESTIONS_EVENT, handleLocalChange);
-    }
-  };
-}
-
-export async function updateSpeakerQuestionStatus(
-  questionId: string,
-  status: SpeakerQuestionStatus
-): Promise<void> {
-  const updateLocally = () => {
-    const items = readLocalQuestions();
-    if (items.some((q) => q.id === questionId)) {
-      writeLocalQuestions(
-        items.map((q) => (q.id === questionId ? { ...q, status } : q))
-      );
-    }
-  };
-
-  if (!db || questionId.startsWith('local_q_')) {
-    updateLocally();
-    return;
-  }
-
-  try {
-    await withTimeout(
-      updateDoc(doc(db, 'speaker_questions', questionId), { status }),
-      WRITE_TIMEOUT_MS,
-      'Update question status'
-    );
-  } catch (error) {
-    formatFirestoreError(error, OperationType.UPDATE, `speaker_questions/${questionId}`);
-    updateLocally();
-  }
-}
-
-export async function deleteSpeakerQuestion(questionId: string): Promise<void> {
-  const deleteLocally = () => {
-    const items = readLocalQuestions();
-    if (items.some((q) => q.id === questionId)) {
-      writeLocalQuestions(items.filter((q) => q.id !== questionId));
-    }
-  };
-
-  if (!db || questionId.startsWith('local_q_')) {
-    deleteLocally();
-    return;
-  }
-
-  try {
-    await withTimeout(
-      deleteDoc(doc(db, 'speaker_questions', questionId)),
-      WRITE_TIMEOUT_MS,
-      'Delete speaker question'
-    );
-    deleteLocally();
-  } catch (error) {
-    formatFirestoreError(error, OperationType.DELETE, `speaker_questions/${questionId}`);
-    deleteLocally();
-  }
-}
-
-// ============================================================================
-// 2. LIVE POLLS (polls collection + per-device localStorage duplicate guard)
+// 1. LIVE POLLS (polls collection + per-device localStorage duplicate guard)
 // ============================================================================
 
 export function getLocalVotedPolls(): Record<string, string> {
@@ -401,7 +185,7 @@ export function clearLocalPollVote(pollId: string): Record<string, string> {
 
 async function seedDefaultPollsIfEmpty(): Promise<void> {
   const firestore = db;
-  if (!firestore || hasAttemptedPollSeed) return;
+  if (!firestore || hasAttemptedPollSeed || werePollsInitialized()) return;
   hasAttemptedPollSeed = true;
 
   try {
@@ -415,6 +199,8 @@ async function seedDefaultPollsIfEmpty(): Promise<void> {
               sessionTitle: poll.sessionTitle,
               order: index + 1,
               totalVotes: 0,
+              isActive: true,
+              resultsRevealed: false,
               options: poll.options.map((opt) => ({
                 id: opt.id,
                 text: opt.text,
@@ -429,6 +215,7 @@ async function seedDefaultPollsIfEmpty(): Promise<void> {
       WRITE_TIMEOUT_MS,
       'Seed default polls'
     );
+    markPollsInitialized();
   } catch (error) {
     formatFirestoreError(error, OperationType.WRITE, 'polls');
   }
@@ -461,10 +248,21 @@ export function subscribePolls(
       collection(db, 'polls'),
       (snapshot) => {
         if (snapshot.empty) {
-          void seedDefaultPollsIfEmpty();
-          onData(readLocalPolls());
+          if (!werePollsInitialized()) {
+            void seedDefaultPollsIfEmpty();
+            onData(readLocalPolls());
+          } else {
+            try {
+              localStorage.setItem(LOCAL_POLLS_KEY, JSON.stringify([]));
+            } catch {
+              // ignore
+            }
+            onData([]);
+          }
           return;
         }
+
+        markPollsInitialized();
 
         const items = snapshot.docs
           .map((snap) => {
@@ -490,6 +288,8 @@ export function subscribePolls(
                 question: typeof data.question === 'string' ? data.question : '',
                 sessionTitle: typeof data.sessionTitle === 'string' ? data.sessionTitle : '',
                 totalVotes,
+                resultsRevealed: Boolean(data.resultsRevealed),
+                isActive: data.isActive !== false,
                 options,
               } as Poll,
             };
@@ -622,6 +422,7 @@ export async function resetPollVotes(poll: Poll): Promise<void> {
         ? {
             ...p,
             totalVotes: 0,
+            resultsRevealed: false,
             options: p.options.map((opt) => ({ ...opt, votes: 0 })),
           }
         : p
@@ -640,6 +441,7 @@ export async function resetPollVotes(poll: Poll): Promise<void> {
     await withTimeout(
       updateDoc(pollRef, {
         totalVotes: 0,
+        resultsRevealed: false,
         options: poll.options.map((opt) => ({
           id: opt.id,
           text: opt.text,
@@ -653,6 +455,271 @@ export async function resetPollVotes(poll: Poll): Promise<void> {
   } catch (error) {
     formatFirestoreError(error, OperationType.UPDATE, `polls/${poll.id}`);
     resetLocally();
+  }
+}
+
+export async function setPollResultsRevealed(
+  poll: Poll,
+  revealed: boolean
+): Promise<void> {
+  const updateLocally = () => {
+    const localPolls = readLocalPolls().map((p) =>
+      p.id === poll.id ? { ...p, resultsRevealed: revealed } : p
+    );
+    writeLocalPolls(localPolls);
+  };
+
+  if (!db) {
+    updateLocally();
+    return;
+  }
+
+  const pollRef = doc(db, 'polls', poll.id);
+  try {
+    await withTimeout(
+      setDoc(
+        pollRef,
+        {
+          question: poll.question,
+          sessionTitle: poll.sessionTitle,
+          totalVotes: poll.totalVotes,
+          resultsRevealed: revealed,
+          isActive: poll.isActive !== false,
+          options: poll.options.map((opt) => ({
+            id: opt.id,
+            text: opt.text,
+            votes: opt.votes,
+          })),
+        },
+        { merge: true }
+      ),
+      WRITE_TIMEOUT_MS,
+      'Toggle poll results visibility'
+    );
+  } catch (error) {
+    formatFirestoreError(error, OperationType.UPDATE, `polls/${poll.id}`);
+    updateLocally();
+  }
+}
+
+export async function createPoll(input: {
+  question: string;
+  sessionTitle: string;
+  options: string[];
+  isActive?: boolean;
+  order?: number;
+}): Promise<string> {
+  const question = input.question.trim().slice(0, 220);
+  const sessionTitle = input.sessionTitle.trim().slice(0, 120) || 'General Plenary';
+  const cleanedOptions = input.options
+    .map((text) => text.trim().slice(0, 120))
+    .filter(Boolean)
+    .slice(0, 6);
+
+  if (!question) {
+    throw new Error('Please enter a poll question.');
+  }
+  if (cleanedOptions.length < 2) {
+    throw new Error('Please provide at least two answer options.');
+  }
+
+  const isActive = input.isActive ?? false; // Hidden draft by default
+  const pollId = `poll_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const optionItems: PollOption[] = cleanedOptions.map((text, idx) => ({
+    id: `opt_${idx + 1}_${Math.random().toString(36).slice(2, 5)}`,
+    text,
+    votes: 0,
+  }));
+
+  const existingLocal = readLocalPolls();
+  const order = typeof input.order === 'number' ? input.order : existingLocal.length + 1;
+
+  const saveLocally = (): string => {
+    markPollsInitialized();
+    const newPoll: Poll = {
+      id: pollId,
+      question,
+      sessionTitle,
+      totalVotes: 0,
+      resultsRevealed: false,
+      isActive,
+      options: optionItems,
+    };
+    writeLocalPolls([...existingLocal, newPoll]);
+    return pollId;
+  };
+
+  if (!db) {
+    return saveLocally();
+  }
+
+  try {
+    await withTimeout(
+      setDoc(doc(db, 'polls', pollId), {
+        question,
+        sessionTitle,
+        order,
+        totalVotes: 0,
+        resultsRevealed: false,
+        isActive,
+        options: optionItems,
+        createdAt: serverTimestamp(),
+      }),
+      WRITE_TIMEOUT_MS,
+      'Create poll'
+    );
+    markPollsInitialized();
+    return pollId;
+  } catch (error) {
+    formatFirestoreError(error, OperationType.CREATE, `polls/${pollId}`);
+    return saveLocally();
+  }
+}
+
+export async function updatePoll(
+  poll: Poll,
+  updates: {
+    question: string;
+    sessionTitle: string;
+    options: { id?: string; text: string }[];
+  }
+): Promise<void> {
+  const question = updates.question.trim().slice(0, 220);
+  const sessionTitle = updates.sessionTitle.trim().slice(0, 120) || 'General Plenary';
+
+  const existingVotesById = new Map(poll.options.map((o) => [o.id, o.votes]));
+  const nextOptions: PollOption[] = updates.options
+    .map((item, idx) => {
+      const text = item.text.trim().slice(0, 120);
+      if (!text) return null;
+      const id =
+        item.id && existingVotesById.has(item.id)
+          ? item.id
+          : `opt_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 5)}`;
+      return {
+        id,
+        text,
+        votes: existingVotesById.get(id) ?? 0,
+      };
+    })
+    .filter((item): item is PollOption => item !== null)
+    .slice(0, 6);
+
+  if (!question) {
+    throw new Error('Please enter a poll question.');
+  }
+  if (nextOptions.length < 2) {
+    throw new Error('Please provide at least two answer options.');
+  }
+
+  const totalVotes = nextOptions.reduce((sum, opt) => sum + opt.votes, 0);
+
+  const updateLocally = () => {
+    const localPolls = readLocalPolls().map((p) =>
+      p.id === poll.id
+        ? {
+            ...p,
+            question,
+            sessionTitle,
+            options: nextOptions,
+            totalVotes,
+          }
+        : p
+    );
+    writeLocalPolls(localPolls);
+  };
+
+  if (!db) {
+    updateLocally();
+    return;
+  }
+
+  try {
+    await withTimeout(
+      setDoc(
+        doc(db, 'polls', poll.id),
+        {
+          question,
+          sessionTitle,
+          options: nextOptions,
+          totalVotes,
+          resultsRevealed: Boolean(poll.resultsRevealed),
+          isActive: poll.isActive !== false,
+        },
+        { merge: true }
+      ),
+      WRITE_TIMEOUT_MS,
+      'Update poll'
+    );
+  } catch (error) {
+    formatFirestoreError(error, OperationType.UPDATE, `polls/${poll.id}`);
+    updateLocally();
+  }
+}
+
+export async function setPollActive(poll: Poll, isActive: boolean): Promise<void> {
+  const updateLocally = () => {
+    const localPolls = readLocalPolls().map((p) =>
+      p.id === poll.id ? { ...p, isActive } : p
+    );
+    writeLocalPolls(localPolls);
+  };
+
+  if (!db) {
+    updateLocally();
+    return;
+  }
+
+  try {
+    await withTimeout(
+      setDoc(
+        doc(db, 'polls', poll.id),
+        {
+          question: poll.question,
+          sessionTitle: poll.sessionTitle,
+          totalVotes: poll.totalVotes,
+          resultsRevealed: Boolean(poll.resultsRevealed),
+          isActive,
+          options: poll.options.map((opt) => ({
+            id: opt.id,
+            text: opt.text,
+            votes: opt.votes,
+          })),
+        },
+        { merge: true }
+      ),
+      WRITE_TIMEOUT_MS,
+      'Toggle poll live status'
+    );
+  } catch (error) {
+    formatFirestoreError(error, OperationType.UPDATE, `polls/${poll.id}`);
+    updateLocally();
+  }
+}
+
+export async function deletePoll(pollId: string): Promise<void> {
+  const deleteLocally = () => {
+    markPollsInitialized();
+    clearLocalPollVote(pollId);
+    const localPolls = readLocalPolls().filter((p) => p.id !== pollId);
+    writeLocalPolls(localPolls);
+  };
+
+  if (!db) {
+    deleteLocally();
+    return;
+  }
+
+  try {
+    await withTimeout(
+      deleteDoc(doc(db, 'polls', pollId)),
+      WRITE_TIMEOUT_MS,
+      'Delete poll'
+    );
+    deleteLocally();
+  } catch (error) {
+    formatFirestoreError(error, OperationType.DELETE, `polls/${pollId}`);
+    deleteLocally();
   }
 }
 
@@ -858,5 +925,401 @@ export async function deleteEventFeedback(feedbackId: string): Promise<void> {
   } catch (error) {
     formatFirestoreError(error, OperationType.DELETE, `event_feedback/${feedbackId}`);
     deleteLocally();
+  }
+}
+
+// ============================================================================
+// 3. OWNER-LOCKED ORGANIZER SECURITY SETTINGS (read-only from client)
+//    Document: app_settings/organizer_security
+//    Managed exclusively by the event owner in Firebase Console.
+// ============================================================================
+
+export const OWNER_SECURITY_COLLECTION = 'app_settings';
+export const OWNER_SECURITY_DOC_ID = 'organizer_security';
+export const OWNER_SECURITY_DOC_PATH = `${OWNER_SECURITY_COLLECTION}/${OWNER_SECURITY_DOC_ID}`;
+
+const SECURITY_FETCH_TIMEOUT_MS = 3500;
+const SHA256_HEX_REGEX = /^[a-f0-9]{64}$/;
+
+export interface OrganizerPasscodeConfig {
+  source: 'firebase' | 'default';
+  passcodeHash: string | null;
+  plaintextPasscode: string | null;
+  usesHashedStorage: boolean;
+  updatedAtMs: number | null;
+  lastSyncedAt: number;
+  syncError: string | null;
+}
+
+function parseOrganizerSecurityDoc(
+  data: Record<string, unknown> | undefined
+): OrganizerPasscodeConfig {
+  const now = Date.now();
+  if (!data) {
+    return {
+      source: 'default',
+      passcodeHash: null,
+      plaintextPasscode: null,
+      usesHashedStorage: false,
+      updatedAtMs: null,
+      lastSyncedAt: now,
+      syncError: null,
+    };
+  }
+
+  const rawHash =
+    typeof data.passcodeHash === 'string' ? data.passcodeHash.trim().toLowerCase() : '';
+  const rawPasscode =
+    typeof data.passcode === 'string' ? data.passcode.trim() : '';
+  const updatedAtMs = data.updatedAt ? timestampToMs(data.updatedAt) : null;
+
+  if (SHA256_HEX_REGEX.test(rawHash)) {
+    return {
+      source: 'firebase',
+      passcodeHash: rawHash,
+      plaintextPasscode: null,
+      usesHashedStorage: true,
+      updatedAtMs,
+      lastSyncedAt: now,
+      syncError: null,
+    };
+  }
+
+  if (rawPasscode.length > 0) {
+    return {
+      source: 'firebase',
+      passcodeHash: null,
+      plaintextPasscode: rawPasscode,
+      usesHashedStorage: false,
+      updatedAtMs,
+      lastSyncedAt: now,
+      syncError: null,
+    };
+  }
+
+  return {
+    source: 'default',
+    passcodeHash: null,
+    plaintextPasscode: null,
+    usesHashedStorage: false,
+    updatedAtMs,
+    lastSyncedAt: now,
+    syncError: null,
+  };
+}
+
+export async function fetchOrganizerPasscodeConfig(): Promise<OrganizerPasscodeConfig> {
+  const now = Date.now();
+  if (!db) {
+    return {
+      source: 'default',
+      passcodeHash: null,
+      plaintextPasscode: null,
+      usesHashedStorage: false,
+      updatedAtMs: null,
+      lastSyncedAt: now,
+      syncError: 'Firebase is unavailable — using built-in event passcode.',
+    };
+  }
+
+  try {
+    const snap = await withTimeout(
+      getDoc(doc(db, OWNER_SECURITY_COLLECTION, OWNER_SECURITY_DOC_ID)),
+      SECURITY_FETCH_TIMEOUT_MS,
+      'Fetch organizer passcode config'
+    );
+    if (!snap.exists()) {
+      return parseOrganizerSecurityDoc(undefined);
+    }
+    return parseOrganizerSecurityDoc(snap.data() as Record<string, unknown>);
+  } catch (error) {
+    formatFirestoreError(error, OperationType.GET, OWNER_SECURITY_DOC_PATH);
+    return {
+      source: 'default',
+      passcodeHash: null,
+      plaintextPasscode: null,
+      usesHashedStorage: false,
+      updatedAtMs: null,
+      lastSyncedAt: now,
+      syncError: 'Unable to reach Firebase right now — using cached or default passcode.',
+    };
+  }
+}
+
+export function subscribeOrganizerPasscodeConfig(
+  onData: (config: OrganizerPasscodeConfig) => void
+): Unsubscribe {
+  if (!db) {
+    onData({
+      source: 'default',
+      passcodeHash: null,
+      plaintextPasscode: null,
+      usesHashedStorage: false,
+      updatedAtMs: null,
+      lastSyncedAt: Date.now(),
+      syncError: 'Firebase is unavailable — using built-in event passcode.',
+    });
+    return () => {};
+  }
+
+  try {
+    return onSnapshot(
+      doc(db, OWNER_SECURITY_COLLECTION, OWNER_SECURITY_DOC_ID),
+      (snap) => {
+        if (!snap.exists()) {
+          onData(parseOrganizerSecurityDoc(undefined));
+          return;
+        }
+        onData(parseOrganizerSecurityDoc(snap.data() as Record<string, unknown>));
+      },
+      (error) => {
+        formatFirestoreError(error, OperationType.GET, OWNER_SECURITY_DOC_PATH);
+        onData({
+          source: 'default',
+          passcodeHash: null,
+          plaintextPasscode: null,
+          usesHashedStorage: false,
+          updatedAtMs: null,
+          lastSyncedAt: Date.now(),
+          syncError: 'Live Firebase sync paused — using cached or default passcode.',
+        });
+      }
+    );
+  } catch (error) {
+    formatFirestoreError(error, OperationType.GET, OWNER_SECURITY_DOC_PATH);
+    return () => {};
+  }
+}
+
+// ============================================================================
+// 4. TABLE PLAN SEATING ASSIGNMENTS (table_plan/current document)
+//    Atomic single-document sync across all connected devices + local fallback.
+// ============================================================================
+
+export interface TablePlanEntry {
+  id: string;
+  name: string;
+  table: string;
+}
+
+export interface TablePlanData {
+  entries: TablePlanEntry[];
+  fileName: string | null;
+  delegateCount: number;
+  tableCount: number;
+  updatedAt: number | null;
+}
+
+const TABLE_PLAN_COLLECTION = 'table_plan';
+const TABLE_PLAN_DOC_ID = 'current';
+const TABLE_PLAN_DOC_PATH = `${TABLE_PLAN_COLLECTION}/${TABLE_PLAN_DOC_ID}`;
+const LOCAL_TABLE_PLAN_KEY = 'sd_fallback_table_plan_v1';
+const LOCAL_TABLE_PLAN_EVENT = 'sd:local-table-plan-updated';
+
+export const EMPTY_TABLE_PLAN: TablePlanData = {
+  entries: [],
+  fileName: null,
+  delegateCount: 0,
+  tableCount: 0,
+  updatedAt: null,
+};
+
+function countUniqueTables(entries: TablePlanEntry[]): number {
+  const unique = new Set(
+    entries
+      .map((entry) => entry.table.trim().toLowerCase())
+      .filter((val) => val.length > 0)
+  );
+  return unique.size;
+}
+
+function sanitizeTablePlanEntries(raw: unknown): TablePlanEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const entries: TablePlanEntry[] = [];
+  raw.forEach((item, index) => {
+    if (!item || typeof item !== 'object') return;
+    const record = item as Record<string, unknown>;
+    const name = typeof record.name === 'string' ? record.name.trim() : '';
+    const table = typeof record.table === 'string' ? record.table.trim() : '';
+    if (!name || !table) return;
+    const id =
+      typeof record.id === 'string' && record.id.trim()
+        ? record.id.trim()
+        : `seat_${index + 1}`;
+    entries.push({ id, name, table });
+  });
+  return entries;
+}
+
+function readLocalTablePlan(): TablePlanData {
+  try {
+    const raw = localStorage.getItem(LOCAL_TABLE_PLAN_KEY);
+    if (!raw) return EMPTY_TABLE_PLAN;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const entries = sanitizeTablePlanEntries(parsed.entries);
+    return {
+      entries,
+      fileName: typeof parsed.fileName === 'string' ? parsed.fileName : null,
+      delegateCount: entries.length,
+      tableCount: countUniqueTables(entries),
+      updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : null,
+    };
+  } catch {
+    return EMPTY_TABLE_PLAN;
+  }
+}
+
+function writeLocalTablePlan(plan: TablePlanData) {
+  try {
+    localStorage.setItem(LOCAL_TABLE_PLAN_KEY, JSON.stringify(plan));
+  } catch {
+    // ignore storage errors
+  }
+  dispatchLocalEvent(LOCAL_TABLE_PLAN_EVENT);
+}
+
+export function subscribeTablePlan(
+  onData: (plan: TablePlanData) => void,
+  onError?: (message: string) => void
+): Unsubscribe {
+  let hasRemoteSnapshot = false;
+
+  const handleLocalChange = () => {
+    onData(readLocalTablePlan());
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener(LOCAL_TABLE_PLAN_EVENT, handleLocalChange);
+  }
+
+  if (!db) {
+    onData(readLocalTablePlan());
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(LOCAL_TABLE_PLAN_EVENT, handleLocalChange);
+      }
+    };
+  }
+
+  const fallbackTimer = window.setTimeout(() => {
+    if (!hasRemoteSnapshot) {
+      onData(readLocalTablePlan());
+    }
+  }, INITIAL_SNAPSHOT_FALLBACK_MS);
+
+  let unsubFirestore: Unsubscribe = () => {};
+  try {
+    unsubFirestore = onSnapshot(
+      doc(db, TABLE_PLAN_COLLECTION, TABLE_PLAN_DOC_ID),
+      (snap) => {
+        hasRemoteSnapshot = true;
+        window.clearTimeout(fallbackTimer);
+
+        if (!snap.exists()) {
+          writeLocalTablePlan(EMPTY_TABLE_PLAN);
+          onData(EMPTY_TABLE_PLAN);
+          return;
+        }
+
+        const data = snap.data() as Record<string, unknown>;
+        const entries = sanitizeTablePlanEntries(data.entries);
+        const plan: TablePlanData = {
+          entries,
+          fileName: typeof data.fileName === 'string' ? data.fileName : null,
+          delegateCount: entries.length,
+          tableCount: countUniqueTables(entries),
+          updatedAt: data.updatedAt ? timestampToMs(data.updatedAt) : null,
+        };
+        writeLocalTablePlan(plan);
+        onData(plan);
+      },
+      (error) => {
+        hasRemoteSnapshot = true;
+        window.clearTimeout(fallbackTimer);
+        formatFirestoreError(error, OperationType.GET, TABLE_PLAN_DOC_PATH);
+        onData(readLocalTablePlan());
+        onError?.('Live cloud sync paused — showing cached table plan.');
+      }
+    );
+  } catch (error) {
+    window.clearTimeout(fallbackTimer);
+    formatFirestoreError(error, OperationType.GET, TABLE_PLAN_DOC_PATH);
+    onData(readLocalTablePlan());
+  }
+
+  return () => {
+    window.clearTimeout(fallbackTimer);
+    unsubFirestore();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener(LOCAL_TABLE_PLAN_EVENT, handleLocalChange);
+    }
+  };
+}
+
+export async function saveTablePlan(input: {
+  entries: TablePlanEntry[];
+  fileName: string | null;
+}): Promise<TablePlanData> {
+  const sanitizedEntries = sanitizeTablePlanEntries(input.entries);
+  const now = Date.now();
+  const nextPlan: TablePlanData = {
+    entries: sanitizedEntries,
+    fileName: input.fileName,
+    delegateCount: sanitizedEntries.length,
+    tableCount: countUniqueTables(sanitizedEntries),
+    updatedAt: now,
+  };
+
+  writeLocalTablePlan(nextPlan);
+
+  if (!db) {
+    return nextPlan;
+  }
+
+  try {
+    await withTimeout(
+      setDoc(doc(db, TABLE_PLAN_COLLECTION, TABLE_PLAN_DOC_ID), {
+        entries: sanitizedEntries,
+        fileName: input.fileName,
+        delegateCount: nextPlan.delegateCount,
+        tableCount: nextPlan.tableCount,
+        updatedAt: serverTimestamp(),
+      }),
+      WRITE_TIMEOUT_MS,
+      'Save table plan'
+    );
+    return nextPlan;
+  } catch (error) {
+    formatFirestoreError(error, OperationType.WRITE, TABLE_PLAN_DOC_PATH);
+    throw new Error(
+      'Saved locally, but could not sync to Firebase right now. Please check your connection and try again.'
+    );
+  }
+}
+
+export async function clearTablePlan(): Promise<void> {
+  writeLocalTablePlan(EMPTY_TABLE_PLAN);
+
+  if (!db) {
+    return;
+  }
+
+  try {
+    await withTimeout(
+      setDoc(doc(db, TABLE_PLAN_COLLECTION, TABLE_PLAN_DOC_ID), {
+        entries: [],
+        fileName: null,
+        delegateCount: 0,
+        tableCount: 0,
+        updatedAt: serverTimestamp(),
+      }),
+      WRITE_TIMEOUT_MS,
+      'Clear table plan'
+    );
+  } catch (error) {
+    formatFirestoreError(error, OperationType.WRITE, TABLE_PLAN_DOC_PATH);
+    throw new Error(
+      'Cleared locally, but could not clear Firebase right now. Please check your connection and try again.'
+    );
   }
 }

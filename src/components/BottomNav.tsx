@@ -1,7 +1,7 @@
 import React from 'react';
-import { LayoutGrid, Clock, MessageSquare } from 'lucide-react';
+import { LayoutGrid, Clock, Armchair, MessageSquare } from 'lucide-react';
 
-export type NavTab = 'hub' | 'running-order' | 'interactions';
+export type NavTab = 'hub' | 'running-order' | 'table-plan' | 'interactions';
 
 interface BottomNavProps {
   activeTab: NavTab;
@@ -29,6 +29,11 @@ export const BottomNav: React.FC<BottomNavProps> = ({
       badge: savedCount > 0 ? savedCount : undefined,
     },
     {
+      id: 'table-plan' as NavTab,
+      label: 'Table Plan',
+      icon: Armchair,
+    },
+    {
       id: 'interactions' as NavTab,
       label: 'Interactions',
       icon: MessageSquare,
@@ -42,7 +47,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
       role="navigation"
       aria-label="Conference Bottom Navigation"
     >
-      <div className="max-w-md mx-auto grid grid-cols-3 items-center h-16 px-1">
+      <div className="max-w-md mx-auto grid grid-cols-4 items-center h-16 px-1">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id;
           const Icon = tab.icon;
@@ -69,7 +74,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
                 )}
               </div>
               <span
-                className={`text-[11px] mt-1 tracking-tight leading-none whitespace-nowrap ${
+                className={`text-[10px] sm:text-[11px] mt-1 tracking-tight leading-none whitespace-nowrap ${
                   isActive ? 'text-black font-bold' : 'text-neutral-500 font-medium'
                 }`}
               >

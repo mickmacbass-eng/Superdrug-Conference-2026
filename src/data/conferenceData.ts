@@ -26,6 +26,8 @@ export interface Poll {
   totalVotes: number;
   options: PollOption[];
   userVotedOptionId?: string;
+  resultsRevealed?: boolean;
+  isActive?: boolean;
 }
 
 export interface QAQuestion {

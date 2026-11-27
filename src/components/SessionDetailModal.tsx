@@ -1,14 +1,12 @@
 import React from 'react';
 import { Session } from '../data/conferenceData';
-import { X, Clock, MapPin, Bookmark, BookmarkCheck, CalendarPlus, MessageSquare, User } from 'lucide-react';
-import { useBrand } from '../config/BrandContext';
+import { X, MapPin, Bookmark, BookmarkCheck, CalendarPlus } from 'lucide-react';
 
 interface SessionDetailModalProps {
   session: Session | null;
   onClose: () => void;
   isBookmarked: boolean;
   onToggleBookmark: (sessionId: string) => void;
-  onAskSpeaker: (speakerName: string) => void;
 }
 
 export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({
@@ -16,10 +14,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({
   onClose,
   isBookmarked,
   onToggleBookmark,
-  onAskSpeaker,
 }) => {
-  const { config } = useBrand();
-  const speakerQuestionsEnabled = config.features.enableSpeakerQuestions !== false;
   if (!session) return null;
 
   const downloadIcs = () => {
@@ -117,18 +112,6 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({
                     {speaker.title} {speaker.company ? `· ${speaker.company}` : ''}
                   </div>
                 </div>
-
-                {speakerQuestionsEnabled && (
-                  <button
-                    onClick={() => {
-                      onClose();
-                      onAskSpeaker(speaker.name);
-                    }}
-                    className="text-xs font-bold text-[#E5007D] hover:underline whitespace-nowrap pl-2"
-                  >
-                    Ask Question
-                  </button>
-                )}
               </div>
             ))}
           </div>

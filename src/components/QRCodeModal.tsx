@@ -656,14 +656,6 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({ onClose, defaultUrl })
               >
                 Welcome Splash
               </button>
-              <button
-                type="button"
-                onClick={() => applyRoutePreset({ brand: config.id })}
-                className="min-h-[36px] text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition-colors whitespace-nowrap"
-                title={`Append ?brand=${config.id} for multi-client hosting`}
-              >
-                Lock {config.name} Brand
-              </button>
             </div>
 
             {/* URL Validation Warning */}

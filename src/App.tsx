@@ -9,6 +9,7 @@ import { BottomNav, NavTab } from './components/BottomNav';
 import { HubView } from './components/HubView';
 import { RunningOrderView } from './components/RunningOrderView';
 import { InteractionsView } from './components/InteractionsView';
+import { TablePlanView } from './components/TablePlanView';
 import { SessionDetailModal } from './components/SessionDetailModal';
 import { VenueModal } from './components/VenueModal';
 import { ModeratorModal } from './components/ModeratorModal';
@@ -18,6 +19,7 @@ import { QRCodeModal } from './components/QRCodeModal';
 import { OrganizerAuthModal } from './components/OrganizerAuthModal';
 import { useBrand } from './config/BrandContext';
 import {
+  initOrganizerPasscodeSync,
   isOrganizerSessionUnlocked,
   setOrganizerSessionUnlocked,
 } from './utils/organizerAuth';
@@ -30,9 +32,11 @@ import {
 } from './data/conferenceData';
 import {
   castPollVote,
+  EMPTY_TABLE_PLAN,
   getLocalVotedPolls,
-  submitSpeakerQuestion,
   subscribePolls,
+  subscribeTablePlan,
+  TablePlanData,
 } from './services/firestoreService';
 
 export default function App() {
@@ -75,6 +79,27 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    return initOrganizerPasscodeSync();
+  }, []);
+
+  // Real-Time Firestore Table Plan
+  const [tablePlan, setTablePlan] = useState<TablePlanData>(EMPTY_TABLE_PLAN);
+  const [tablePlanError, setTablePlanError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = subscribeTablePlan(
+      (plan) => {
+        setTablePlan(plan);
+        setTablePlanError(null);
+      },
+      (errMessage) => {
+        setTablePlanError(errMessage);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
   const polls: Poll[] = remotePolls.map((poll) => ({
     ...poll,
     userVotedOptionId: votedPollsMap[poll.id],
@@ -84,13 +109,12 @@ export default function App() {
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [showVenueModal, setShowVenueModal] = useState(false);
   const [showModeratorModal, setShowModeratorModal] = useState(false);
-  const [moderatorTab, setModeratorTab] = useState<'questions' | 'polls' | 'feedback'>('questions');
+  const [moderatorTab, setModeratorTab] = useState<'polls' | 'feedback' | 'tables'>('feedback');
   const [showBrandStudioModal, setShowBrandStudioModal] = useState(false);
   const [showQRCodeModal, setShowQRCodeModal] = useState(false);
-  const [targetSpeakerForQA, setTargetSpeakerForQA] = useState<string | undefined>(undefined);
 
   type AdminTarget =
-    | { type: 'moderator'; tab: 'questions' | 'polls' | 'feedback' }
+    | { type: 'moderator'; tab: 'polls' | 'feedback' | 'tables' }
     | { type: 'brand-studio' };
 
   const [isOrganizerUnlocked, setIsOrganizerUnlocked] = useState<boolean>(() =>
@@ -137,6 +161,7 @@ export default function App() {
     if (target.type === 'brand-studio') return 'Brand & Event Studio';
     if (target.tab === 'feedback') return 'Organizer Feedback Dashboard';
     if (target.tab === 'polls') return 'Live Poll Controls';
+    if (target.tab === 'tables') return 'Table Plan Manager';
     return 'Organizer & Moderator Desk';
   };
 
@@ -229,17 +254,15 @@ export default function App() {
     } else if (
       params.has('feedback') ||
       hash.includes('feedback') ||
+      params.has('moderator') ||
+      hash.includes('moderator') ||
       isOrganiserLink
     ) {
       setShowSplash(false);
       requestOrganizerAccess({ type: 'moderator', tab: 'feedback' });
-    } else if (params.has('moderator') || hash.includes('moderator')) {
-      setShowSplash(false);
-      requestOrganizerAccess({ type: 'moderator', tab: 'questions' });
     }
 
-    // Only open Brand Studio modal on explicit ?brand=true, ?studio, or #brand
-    // (preserves ?brand=boots / ?brand=sephora public theme links without prompting delegates)
+    // Open Brand Studio modal on explicit ?brand=true, ?studio, or #brand
     if (params.get('brand') === 'true' || hasTruthyParam('studio') || hash === '#brand') {
       setShowSplash(false);
       requestOrganizerAccess({ type: 'brand-studio' });
@@ -274,21 +297,9 @@ export default function App() {
     setVotedPollsMap(getLocalVotedPolls());
   };
 
-  const handleSubmitQuestion = async (newQ: {
-    questionText: string;
-    delegateName: string;
-    sessionName: string;
-  }) => {
-    await submitSpeakerQuestion(newQ);
-  };
-
-  const handleNavigateToInteractionsWithSpeaker = (speakerName?: string) => {
-    setTargetSpeakerForQA(speakerName);
-    setActiveTab('interactions');
-  };
-
   const currentLiveSession = INITIAL_SESSIONS.find((s) => s.isLive) || INITIAL_SESSIONS[1];
-  const unvotedPollCount = polls.filter((p) => !p.userVotedOptionId).length;
+  const activePolls = polls.filter((p) => p.isActive !== false);
+  const unvotedPollCount = activePolls.filter((p) => !p.userVotedOptionId).length;
 
   if (showSplash) {
     return (
@@ -339,19 +350,22 @@ export default function App() {
               bookmarkedIds={bookmarkedIds}
               onToggleBookmark={toggleBookmark}
               onSelectSession={(session) => setSelectedSession(session)}
-              onNavigateToInteractions={handleNavigateToInteractionsWithSpeaker}
+            />
+          )}
+
+          {activeTab === 'table-plan' && (
+            <TablePlanView
+              tablePlan={tablePlan}
+              syncError={tablePlanError}
             />
           )}
 
           {activeTab === 'interactions' && (
             <InteractionsView
-              polls={polls}
-              sessions={INITIAL_SESSIONS}
+              polls={activePolls}
               speakers={FEATURED_SPEAKERS}
               pollsError={pollsError}
               onVotePoll={handleVotePoll}
-              onSubmitQuestion={handleSubmitQuestion}
-              initialTargetSpeaker={targetSpeakerForQA}
             />
           )}
 
@@ -386,7 +400,6 @@ export default function App() {
             onClose={() => setSelectedSession(null)}
             isBookmarked={bookmarkedIds.has(selectedSession.id)}
             onToggleBookmark={toggleBookmark}
-            onAskSpeaker={handleNavigateToInteractionsWithSpeaker}
           />
         )}
 
@@ -398,6 +411,7 @@ export default function App() {
           <ModeratorModal
             onClose={() => setShowModeratorModal(false)}
             polls={polls}
+            tablePlan={tablePlan}
             initialTab={moderatorTab}
             onLockOrganizer={handleLockOrganizer}
             onOpenBrandStudio={() => {

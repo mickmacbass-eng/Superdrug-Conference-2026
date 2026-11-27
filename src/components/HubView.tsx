@@ -2,7 +2,7 @@ import React from 'react';
 import { Session } from '../data/conferenceData';
 import { NavTab } from './BottomNav';
 import { useBrand } from '../config/BrandContext';
-import { MapPin, Radio, Clock, QrCode } from 'lucide-react';
+import { MapPin, Radio, Clock, QrCode, Armchair } from 'lucide-react';
 import { EventFeedback } from './EventFeedback';
 import { ConferenceCountdown } from './ConferenceCountdown';
 
@@ -121,11 +121,7 @@ export const HubView: React.FC<HubViewProps> = ({
               className="flex-1 bg-brand text-white text-xs font-semibold py-2.5 px-4 rounded-full shadow-sm hover:opacity-90 active:scale-95 transition-all flex items-center justify-center gap-1.5 tap-highlight"
             >
               <Radio className="w-3.5 h-3.5" />
-              <span>
-                {config.features.enableSpeakerQuestions !== false
-                  ? 'Ask Speaker / Live Poll'
-                  : 'Join Live Poll'}
-              </span>
+              <span>Join Live Poll</span>
             </button>
             <button
               onClick={() => onOpenSessionModal(currentLiveSession)}
@@ -167,6 +163,28 @@ export const HubView: React.FC<HubViewProps> = ({
             <span className="text-[11px] text-neutral-500 mt-0.5">Floor plan &amp; breakout zones</span>
           </button>
         </div>
+
+        {/* Table Plan Quick Lookup Card */}
+        <button
+          onClick={() => onNavigateTab('table-plan')}
+          className="w-full flex items-center justify-between p-4 rounded-2xl border border-neutral-200 bg-white hover:border-black active:scale-[0.99] transition-all group tap-highlight text-left"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-neutral-100 flex items-center justify-center shrink-0 group-hover:bg-black transition-colors">
+              <Armchair className="w-5 h-5 text-brand" />
+            </div>
+            <div>
+              <div className="text-sm font-bold text-black">Table Plan</div>
+              <p className="text-[11px] text-neutral-500 mt-0.5">
+                Type your name to find your assigned table
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center text-xs font-semibold text-neutral-600 group-hover:text-black transition-colors whitespace-nowrap shrink-0">
+            <span>Find Seat</span>
+            <span className="ml-1 text-[#E5007D]">→</span>
+          </div>
+        </button>
 
         {/* Featured Conference Web App QR Code Card */}
         {onOpenQRCode && (
